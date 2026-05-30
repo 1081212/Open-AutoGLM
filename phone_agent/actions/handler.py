@@ -239,10 +239,9 @@ class ActionHandler:
         return ActionResult(True, False)
 
     def _handle_note(self, action: dict, width: int, height: int) -> ActionResult:
-        """Handle note action (placeholder for content recording)."""
-        # This action is typically used for recording page content
-        # Implementation depends on specific requirements
-        return ActionResult(True, False)
+        """Handle note action for recording a test issue and continuing."""
+        message = action.get("message", "Issue noted")
+        return ActionResult(True, False, message=message)
 
     def _handle_call_api(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle API call action (placeholder for summarization)."""
@@ -371,6 +370,9 @@ def parse_action(response: str) -> dict[str, Any]:
                     value = ast.literal_eval(keyword.value)
                     action[key] = value
 
+                if "action" in action:
+                    action["action"] = normalize_action_name(action["action"])
+
                 return action
             except (SyntaxError, ValueError) as e:
                 raise ValueError(f"Failed to parse do() action: {e}")
@@ -390,6 +392,8 @@ def parse_action(response: str) -> dict[str, Any]:
 def do(**kwargs) -> dict[str, Any]:
     """Helper function for creating 'do' actions."""
     kwargs["_metadata"] = "do"
+    if "action" in kwargs:
+        kwargs["action"] = normalize_action_name(kwargs["action"])
     return kwargs
 
 
@@ -397,3 +401,19 @@ def finish(**kwargs) -> dict[str, Any]:
     """Helper function for creating 'finish' actions."""
     kwargs["_metadata"] = "finish"
     return kwargs
+
+
+def normalize_action_name(action_name: Any) -> Any:
+    """Normalize common model variants to executable action names."""
+    if not isinstance(action_name, str):
+        return action_name
+
+    aliases = {
+        "note": "Note",
+        "takeover": "Take_over",
+        "take_over": "Take_over",
+        "take over": "Take_over",
+        "tack_over": "Take_over",
+        "tackover": "Take_over",
+    }
+    return aliases.get(action_name.strip().lower(), action_name)

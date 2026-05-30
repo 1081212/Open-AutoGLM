@@ -252,10 +252,9 @@ class IOSActionHandler:
         return ActionResult(True, False)
 
     def _handle_note(self, action: dict, width: int, height: int) -> ActionResult:
-        """Handle note action (placeholder for content recording)."""
-        # This action is typically used for recording page content
-        # Implementation depends on specific requirements
-        return ActionResult(True, False)
+        """Handle note action for recording a test issue and continuing."""
+        message = action.get("message", "Issue noted")
+        return ActionResult(True, False, message=message)
 
     def _handle_call_api(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle API call action (placeholder for summarization)."""

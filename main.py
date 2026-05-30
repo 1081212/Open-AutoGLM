@@ -515,10 +515,10 @@ Examples:
     )
 
     parser.add_argument(
-        "task",
-        nargs="?",
+        "tasks",
+        nargs="*",
         type=str,
-        help="Task to execute (interactive mode if not provided)",
+        help="Tasks to execute one by one (interactive mode if not provided)",
     )
 
     return parser.parse_args()
@@ -817,11 +817,14 @@ def main():
 
     print("=" * 50)
 
-    # Run with provided task or enter interactive mode
-    if args.task:
-        print(f"\nTask: {args.task}\n")
-        result = agent.run(args.task)
-        print(f"\nResult: {result}")
+    # Run with provided tasks or enter interactive mode
+    if args.tasks:
+        total_tasks = len(args.tasks)
+        for index, task in enumerate(args.tasks, start=1):
+            print(f"\nTask {index}/{total_tasks}: {task}\n")
+            result = agent.run(task)
+            print(f"\nResult {index}/{total_tasks}: {result}")
+            agent.reset()
     else:
         # Interactive mode
         print("\nEntering interactive mode. Type 'quit' to exit.\n")

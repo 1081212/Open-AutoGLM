@@ -12,6 +12,22 @@ from phone_agent.device_factory import get_device_factory
 from phone_agent.model import ModelClient, ModelConfig
 from phone_agent.model.client import MessageBuilder
 
+ISSUE_KEYWORDS = (
+    "bug",
+    "不符合",
+    "不合理",
+    "异常",
+    "错误",
+    "失败",
+    "没生效",
+    "无响应",
+    "白屏",
+    "黑屏",
+    "闪退",
+    "卡死",
+    "崩溃",
+)
+
 
 @dataclass
 class AgentConfig:
@@ -194,6 +210,11 @@ class PhoneAgent:
                 traceback.print_exc()
             action = finish(message=response.action)
 
+        action_response = response.action
+        action = self._convert_bug_finish_to_note(action)
+        if action.get("action") == "Note" and action_response != response.action:
+            action_response = self._format_action_for_context(action)
+
         if self.agent_config.verbose:
             # Print thinking process
             print("-" * 50)
@@ -219,7 +240,7 @@ class PhoneAgent:
         # Add assistant response to context
         self._context.append(
             MessageBuilder.create_assistant_message(
-                f"<think>{response.thinking}</think><answer>{response.action}</answer>"
+                f"<think>{response.thinking}</think><answer>{action_response}</answer>"
             )
         )
 
@@ -241,6 +262,37 @@ class PhoneAgent:
             thinking=response.thinking,
             message=result.message or action.get("message"),
         )
+
+    def _convert_bug_finish_to_note(self, action: dict[str, Any]) -> dict[str, Any]:
+        """
+        Convert a premature bug-reporting finish into Note.
+
+        This only inspects the parsed action payload, not the model thinking, so
+        historical mentions of earlier issues do not trigger the guard.
+        """
+        if action.get("_metadata") != "finish":
+            return action
+
+        message = str(action.get("message", ""))
+        if any(keyword.lower() in message.lower() for keyword in ISSUE_KEYWORDS):
+            return do(action="Note", message=message)
+
+        return action
+
+    def _format_action_for_context(self, action: dict[str, Any]) -> str:
+        """Serialize an executed action back into the prompt action format."""
+        if action.get("_metadata") == "do":
+            args = []
+            for key, value in action.items():
+                if key == "_metadata":
+                    continue
+                args.append(f"{key}={json.dumps(value, ensure_ascii=False)}")
+            return f"do({', '.join(args)})"
+
+        if action.get("_metadata") == "finish":
+            return f"finish(message={json.dumps(action.get('message', ''), ensure_ascii=False)})"
+
+        return str(action)
 
     @property
     def context(self) -> list[dict[str, Any]]:
