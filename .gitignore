@@ -64,6 +64,5 @@ app_package_name.py
 
 .env
 cloud-phone-test
-docs
 test_artifacts
 ADBKeyboard.apk
