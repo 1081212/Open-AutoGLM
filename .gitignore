@@ -61,3 +61,9 @@ app_package_name.py
 
 .claude/
 .venv
+
+.env
+cloud-phone-test
+docs
+test_artifacts
+ADBKeyboard.apk

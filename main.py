@@ -30,6 +30,7 @@ from phone_agent.config.apps_harmonyos import list_supported_apps as list_harmon
 from phone_agent.config.apps_ios import list_supported_apps as list_ios_apps
 from phone_agent.device_factory import DeviceType, get_device_factory, set_device_type
 from phone_agent.model import ModelConfig
+from phone_agent.reporting import TestRunReporter
 from phone_agent.xctest import XCTestConnection
 from phone_agent.xctest import list_devices as list_ios_devices
 
@@ -495,6 +496,20 @@ Examples:
     )
 
     parser.add_argument(
+        "--artifact-name",
+        type=str,
+        default=os.getenv("PHONE_AGENT_ARTIFACT_NAME"),
+        help="Name for the test_artifacts run directory",
+    )
+
+    parser.add_argument(
+        "--artifact-dir",
+        type=str,
+        default=os.getenv("PHONE_AGENT_ARTIFACT_DIR", "test_artifacts"),
+        help="Directory for screenshots, UI dumps, and reports",
+    )
+
+    parser.add_argument(
         "--list-apps", action="store_true", help="List supported apps and exit"
     )
 
@@ -696,6 +711,9 @@ def main():
     # Set device type globally for non-iOS devices
     if device_type != DeviceType.IOS:
         set_device_type(device_type)
+        if args.device_id and device_type == DeviceType.ADB:
+            # Keep plain adb calls inside setup checks pinned to the selected device.
+            os.environ["ANDROID_SERIAL"] = args.device_id
 
     # Enable HDC verbose mode if using HDC
     if device_type == DeviceType.HDC:
@@ -752,6 +770,15 @@ def main():
         lang=args.lang,
     )
 
+    reporter = TestRunReporter(
+        artifact_name=args.artifact_name,
+        base_dir=args.artifact_dir,
+        device_type=args.device_type,
+        device_id=args.device_id,
+        model_name=args.model,
+        base_url=args.base_url,
+    )
+
     if device_type == DeviceType.IOS:
         # Create iOS agent
         agent_config = IOSAgentConfig(
@@ -773,6 +800,7 @@ def main():
             device_id=args.device_id,
             verbose=not args.quiet,
             lang=args.lang,
+            reporter=reporter,
         )
 
         agent = PhoneAgent(
@@ -822,9 +850,14 @@ def main():
         total_tasks = len(args.tasks)
         for index, task in enumerate(args.tasks, start=1):
             print(f"\nTask {index}/{total_tasks}: {task}\n")
+            reporter.start_case(task, index)
             result = agent.run(task)
+            if reporter.current_case:
+                reporter.finish_case(result)
             print(f"\nResult {index}/{total_tasks}: {result}")
             agent.reset()
+        reporter.finish_run()
+        print(f"\nSummary report: {reporter.root_dir / 'summary.md'}")
     else:
         # Interactive mode
         print("\nEntering interactive mode. Type 'quit' to exit.\n")
@@ -841,9 +874,14 @@ def main():
                     continue
 
                 print()
+                reporter.start_case(task, len(reporter.cases) + 1)
                 result = agent.run(task)
+                if reporter.current_case:
+                    reporter.finish_case(result)
                 print(f"\nResult: {result}\n")
                 agent.reset()
+                reporter.finish_run()
+                print(f"Summary report: {reporter.root_dir / 'summary.md'}\n")
 
             except KeyboardInterrupt:
                 print("\n\nInterrupted. Goodbye!")

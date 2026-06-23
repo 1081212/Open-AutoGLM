@@ -38,6 +38,7 @@ class AgentConfig:
     lang: str = "cn"
     system_prompt: str | None = None
     verbose: bool = True
+    reporter: Any | None = None
 
     def __post_init__(self):
         if self.system_prompt is None:
@@ -109,21 +110,31 @@ class PhoneAgent:
         """
         self._context = []
         self._step_count = 0
+        if self.agent_config.reporter and not self.agent_config.reporter.current_case:
+            self.agent_config.reporter.start_case(
+                task, len(self.agent_config.reporter.cases) + 1
+            )
 
         # First step with user prompt
         result = self._execute_step(task, is_first=True)
 
         if result.finished:
-            return result.message or "Task completed"
+            message = result.message or "Task completed"
+            self._finish_report_case(message)
+            return message
 
         # Continue until finished or max steps reached
         while self._step_count < self.agent_config.max_steps:
             result = self._execute_step(is_first=False)
 
             if result.finished:
-                return result.message or "Task completed"
+                message = result.message or "Task completed"
+                self._finish_report_case(message)
+                return message
 
-        return "Max steps reached"
+        message = "Max steps reached"
+        self._finish_report_case(message, max_steps_reached=True)
+        return message
 
     def step(self, task: str | None = None) -> StepResult:
         """
@@ -159,6 +170,15 @@ class PhoneAgent:
         device_factory = get_device_factory()
         screenshot = device_factory.get_screenshot(self.agent_config.device_id)
         current_app = device_factory.get_current_app(self.agent_config.device_id)
+        if self.agent_config.reporter:
+            self.agent_config.reporter.save_step(
+                step=self._step_count,
+                screenshot_base64=screenshot.base64_data,
+                width=screenshot.width,
+                height=screenshot.height,
+                current_app=current_app,
+                sensitive_screenshot=screenshot.is_sensitive,
+            )
 
         # Build messages
         if is_first:
@@ -187,9 +207,11 @@ class PhoneAgent:
         # Get model response
         try:
             msgs = get_messages(self.agent_config.lang)
-            print("\n" + "=" * 50)
-            print(f"💭 {msgs['thinking']}:")
-            print("-" * 50)
+            # The model thinking stream is useful for debugging, but it makes
+            # test reports noisy. Keep it in context, do not print it by default.
+            # print("\n" + "=" * 50)
+            # print(f"💭 {msgs['thinking']}:")
+            # print("-" * 50)
             response = self.model_client.request(self._context)
         except Exception as e:
             if self.agent_config.verbose:
@@ -216,11 +238,13 @@ class PhoneAgent:
             action_response = self._format_action_for_context(action)
 
         if self.agent_config.verbose:
-            # Print thinking process
-            print("-" * 50)
-            print(f"🎯 {msgs['action']}:")
-            print(json.dumps(action, ensure_ascii=False, indent=2))
-            print("=" * 50 + "\n")
+            # Detailed action JSON is retained in test_artifacts/report.json.
+            # Leaving this disabled keeps stdout focused on final results.
+            # print("-" * 50)
+            # print(f"🎯 {msgs['action']}:")
+            # print(json.dumps(action, ensure_ascii=False, indent=2))
+            # print("=" * 50 + "\n")
+            pass
 
         # Remove image from context to save space
         self._context[-1] = MessageBuilder.remove_images_from_message(self._context[-1])
@@ -235,6 +259,13 @@ class PhoneAgent:
                 traceback.print_exc()
             result = self.action_handler.execute(
                 finish(message=str(e)), screenshot.width, screenshot.height
+            )
+        if self.agent_config.reporter:
+            self.agent_config.reporter.record_action(
+                step=self._step_count,
+                action=action,
+                success=result.success,
+                message=result.message,
             )
 
         # Add assistant response to context
@@ -262,6 +293,16 @@ class PhoneAgent:
             thinking=response.thinking,
             message=result.message or action.get("message"),
         )
+
+    def _finish_report_case(
+        self, message: str, max_steps_reached: bool = False
+    ) -> None:
+        if self.agent_config.reporter and self.agent_config.reporter.current_case:
+            status = self.agent_config.reporter.finish_case(
+                message, max_steps_reached=max_steps_reached
+            )
+            print(f"\nResult: {status} - {message}")
+            print(f"Artifacts: {self.agent_config.reporter.root_dir}\n")
 
     def _convert_bug_finish_to_note(self, action: dict[str, Any]) -> dict[str, Any]:
         """

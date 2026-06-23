@@ -109,8 +109,10 @@ class ModelClient:
                     if marker in buffer:
                         # Marker found, print everything before it
                         thinking_part = buffer.split(marker, 1)[0]
-                        print(thinking_part, end="", flush=True)
-                        print()  # Print newline after thinking is complete
+                        # Thinking text is kept in ModelResponse.raw_content and
+                        # conversation context. Do not print it into test logs.
+                        # print(thinking_part, end="", flush=True)
+                        # print()  # Print newline after thinking is complete
                         in_action_phase = True
                         marker_found = True
 
@@ -136,7 +138,9 @@ class ModelClient:
 
                 if not is_potential_marker:
                     # Safe to print the buffer
-                    print(buffer, end="", flush=True)
+                    # Suppress streaming thinking in stdout; reports use
+                    # structured artifacts instead of raw model thoughts.
+                    # print(buffer, end="", flush=True)
                     buffer = ""
 
         # Calculate total time
@@ -147,22 +151,24 @@ class ModelClient:
 
         # Print performance metrics
         lang = self.config.lang
-        print()
-        print("=" * 50)
-        print(f"⏱️  {get_message('performance_metrics', lang)}:")
-        print("-" * 50)
-        if time_to_first_token is not None:
-            print(
-                f"{get_message('time_to_first_token', lang)}: {time_to_first_token:.3f}s"
-            )
-        if time_to_thinking_end is not None:
-            print(
-                f"{get_message('time_to_thinking_end', lang)}:        {time_to_thinking_end:.3f}s"
-            )
-        print(
-            f"{get_message('total_inference_time', lang)}:          {total_time:.3f}s"
-        )
-        print("=" * 50)
+        # Performance metrics are still returned on ModelResponse. Keeping them
+        # out of stdout prevents them from polluting functional test reports.
+        # print()
+        # print("=" * 50)
+        # print(f"⏱️  {get_message('performance_metrics', lang)}:")
+        # print("-" * 50)
+        # if time_to_first_token is not None:
+        #     print(
+        #         f"{get_message('time_to_first_token', lang)}: {time_to_first_token:.3f}s"
+        #     )
+        # if time_to_thinking_end is not None:
+        #     print(
+        #         f"{get_message('time_to_thinking_end', lang)}:        {time_to_thinking_end:.3f}s"
+        #     )
+        # print(
+        #     f"{get_message('total_inference_time', lang)}:          {total_time:.3f}s"
+        # )
+        # print("=" * 50)
 
         return ModelResponse(
             thinking=thinking,
