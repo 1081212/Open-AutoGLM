@@ -409,6 +409,7 @@ class TestRunReporter:
 
     def _write_case_html(self, case: CaseReport) -> None:
         path = Path(case.artifacts_dir) / "report.html"
+        meta = _case_metadata(case)
         lines = [
             "<!doctype html>",
             '<html lang="zh-CN">',
@@ -419,21 +420,35 @@ class TestRunReporter:
             f"<style>{_report_css()}</style>",
             "</head>",
             "<body>",
-            '<main class="page">',
-            '<p><a class="back-link" href="../index.html">返回汇总报告</a></p>',
-            '<section class="hero">',
-            f"<div><h1>{_h(case.case_id)}</h1><p>{_h(case.title)}</p></div>",
+            '<header class="detail-bar">',
+            '<a class="back-button" href="../index.html">← 汇总报告</a>',
             f'<span class="status {case.status.lower()}">{_h(case.status)}</span>',
+            "</header>",
+            '<main class="page">',
+            '<section class="hero detail-hero">',
+            f"<div><h1>{_h(case.case_id)}</h1><p>{_h(_display_title(case))}</p></div>",
+            '<dl class="case-meta">',
+            f"<dt>Type</dt><dd>{_h(meta.get('rule_type') or '-')}</dd>",
+            f"<dt>Priority</dt><dd>{_h(meta.get('priority') or '-')}</dd>",
+            f"<dt>Module</dt><dd>{_h(meta.get('module') or '-')}</dd>",
+            f"<dt>Duration</dt><dd>{_h(_case_duration(case))}</dd>",
+            "</dl>",
             "</section>",
             '<section class="meta-grid">',
             _metric_card("开始时间", case.started_at),
             _metric_card("结束时间", case.finished_at or ""),
+            _metric_card("执行时长", _case_duration(case)),
             _metric_card("步骤数", str(len(case.steps))),
-            _metric_card("结果", case.result_message or ""),
             "</section>",
-            '<section class="panel">',
+            '<section class="panel task-panel">',
             "<h2>测试任务</h2>",
-            f"<pre>{_h(case.task)}</pre>",
+            '<div class="markdown-body">',
+            _render_markdown(case.task),
+            "</div>",
+            "</section>",
+            '<section class="panel result-panel">',
+            '<div class="section-head"><div><h2>执行结果</h2><p class="subtle">模型最终输出或框架收尾信息，完整保留。</p></div></div>',
+            f'<div class="result-message">{_render_result_message(case.result_message or "")}</div>',
             "</section>",
         ]
         if case.issues:
@@ -452,6 +467,7 @@ class TestRunReporter:
         for step in case.steps:
             lines.append(_render_step_html(case, step))
         lines.extend(["</section>", "</main>", "</body>", "</html>"])
+        lines.insert(-2, f"<script>{_report_js()}</script>")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _write_summary_html(self) -> None:
@@ -530,9 +546,9 @@ def _build_summary_html(
         "<body>",
         '<main class="shell">',
         '<aside class="sidebar">',
-        '<div class="brand"><span class="brand-mark"></span><div><strong>AutoGLM</strong><small>Test Report</small></div></div>',
-        '<nav class="side-nav"><a href="#overview">Overview</a><a href="#defects">Defects</a><a href="#cases">Cases</a><a href="#environment">Environment</a></nav>',
-        '<div class="side-foot">Generated<br>' + _h(run_started_at) + "</div>",
+        '<div class="brand"><span class="brand-mark"></span><div><strong>Test Report</strong><small>自动化测试报告</small></div></div>',
+        '<nav class="side-nav"><a href="#overview">总览</a><a href="#cases">全部用例</a><a href="#defects">非 PASS 用例</a><a href="#environment">环境信息</a></nav>',
+        '<div class="side-foot">生成时间<br>' + _h(run_started_at) + "</div>",
         "</aside>",
         '<section class="content">',
         '<header class="topbar">',
@@ -554,10 +570,32 @@ def _build_summary_html(
         '<div><h2>Status Overview</h2><p class="subtle">按最终状态聚合，便于先判断本轮执行质量。</p></div>',
         _status_bar(pass_count, fail_count, blocked_count, other_count),
         "</section>",
+        '<section id="cases" class="panel">',
+        '<div class="section-head"><div><h2>全部用例</h2><p class="subtle">点击详情查看完整步骤、截图和动作记录。</p></div></div>',
+        '<div class="case-list">',
+    ]
+    for case in cases:
+        report_link = f"{case.case_id}/report.html"
+        issue_step = _find_issue_step(case)
+        reason = _issue_reason(case, issue_step) if case.status != "PASS" else case.result_message or "Passed"
+        lines.append(
+            '<a class="case-row" href="' + _h(report_link) + '">'
+            f'<span class="status-dot {case.status.lower()}"></span>'
+            f'<span class="case-name"><strong>{_h(case.case_id)}</strong><em>{_h(_display_title(case))}</em></span>'
+            f'<span class="case-steps">{len(case.steps)} steps · {_h(_case_duration(case))}</span>'
+            f'<span class="case-reason">{_h(_shorten(reason, 110))}</span>'
+            f'<span class="status {case.status.lower()}">{_h(case.status)}</span>'
+            "</a>"
+        )
+    lines.extend(
+        [
+            "</div>",
+            "</section>",
         '<section id="defects" class="panel">',
         '<div class="section-head"><div><h2>非 PASS 用例</h2><p class="subtle">优先查看失败截图、失败步骤和模型/动作输出原因。</p></div>',
         f'<span class="count-pill">{len(non_pass_cases)} items</span></div>',
-    ]
+        ]
+    )
 
     if non_pass_cases:
         lines.append('<div class="defect-list">')
@@ -570,28 +608,6 @@ def _build_summary_html(
 
     lines.extend(
         [
-            '<section id="cases" class="panel">',
-            '<div class="section-head"><div><h2>全部用例</h2><p class="subtle">点击详情查看完整步骤、截图和动作记录。</p></div></div>',
-            '<div class="case-list">',
-        ]
-    )
-    for case in cases:
-        report_link = f"{case.case_id}/report.html"
-        issue_step = _find_issue_step(case)
-        reason = _issue_reason(case, issue_step) if case.status != "PASS" else case.result_message or "Passed"
-        lines.append(
-            '<a class="case-row" href="' + _h(report_link) + '">'
-            f'<span class="status-dot {case.status.lower()}"></span>'
-            f'<span class="case-name"><strong>{_h(case.case_id)}</strong><em>{_h(_display_title(case))}</em></span>'
-            f'<span class="case-steps">{len(case.steps)} steps</span>'
-            f'<span class="case-reason">{_h(_shorten(reason, 110))}</span>'
-            f'<span class="status {case.status.lower()}">{_h(case.status)}</span>'
-            "</a>"
-        )
-    lines.extend(["</div>", "</section>"])
-
-    lines.extend(
-        [
             '<section id="environment" class="panel">',
             '<div class="section-head"><div><h2>环境信息</h2><p class="subtle">来自执行时采集的设备、模型和应用信息。</p></div></div>',
             '<dl class="env-list">',
@@ -601,7 +617,17 @@ def _build_summary_html(
         if key == "apps":
             continue
         lines.append(f"<dt>{_h(str(key))}</dt><dd>{_h(str(value))}</dd>")
-    lines.extend(["</dl>", "</section>", "</section>", "</main>", "</body>", "</html>"])
+    lines.extend(
+        [
+            "</dl>",
+            "</section>",
+            "</section>",
+            "</main>",
+            f"<script>{_report_js()}</script>",
+            "</body>",
+            "</html>",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -642,11 +668,7 @@ def _render_step_html(case: CaseReport, step: StepArtifact) -> str:
     screenshot = f"{step.screenshot}" if step.screenshot else ""
     action = json.dumps(step.action or {}, ensure_ascii=False, indent=2)
     ui_texts = "、".join(step.ui_texts[:30])
-    screenshot_html = (
-        f'<a href="{_h(screenshot)}"><img src="{_h(screenshot)}" alt="step {step.step} screenshot"></a>'
-        if screenshot
-        else '<div class="empty-shot">无截图</div>'
-    )
+    screenshot_html = _screenshot_frame(screenshot, step.action, f"step {step.step} screenshot")
     return "\n".join(
         [
             '<article class="step-card">',
@@ -673,10 +695,10 @@ def _render_issue_case_html(case: CaseReport) -> str:
     if issue_step and issue_step.screenshot:
         screenshot = f"{case.case_id}/{issue_step.screenshot}"
     reason = _issue_reason(case, issue_step)
-    screenshot_html = (
-        f'<a href="{_h(screenshot)}"><img src="{_h(screenshot)}" alt="{_h(case.case_id)} issue screenshot"></a>'
-        if screenshot
-        else '<div class="empty-shot">无截图</div>'
+    screenshot_html = _screenshot_frame(
+        screenshot,
+        issue_step.action if issue_step else None,
+        f"{case.case_id} issue screenshot",
     )
     step_label = f"Step {issue_step.step:03d}" if issue_step else "无步骤"
     action = issue_step.action if issue_step else {}
@@ -729,6 +751,87 @@ def _issue_reason(case: CaseReport, step: StepArtifact | None) -> str:
     return case.result_message or ""
 
 
+def _case_metadata(case: CaseReport) -> dict[str, str | None]:
+    match = re.search(r"^(TC-WEARFIT-(.+)-(\d{3})-(normal|audio))$", case.case_id)
+    module = None
+    rule_type = None
+    if match:
+        module = match.group(2)
+        rule_type = match.group(4)
+    priority_match = re.search(r"^\s*-\s*优先级\s*[:：]\s*(.+?)\s*$", case.task, re.MULTILINE)
+    return {
+        "module": module,
+        "rule_type": rule_type,
+        "priority": priority_match.group(1).strip() if priority_match else None,
+    }
+
+
+def _case_duration(case: CaseReport) -> str:
+    if not case.started_at or not case.finished_at:
+        return "-"
+    try:
+        start = datetime.fromisoformat(case.started_at)
+        end = datetime.fromisoformat(case.finished_at)
+        seconds = max(0, int((end - start).total_seconds()))
+    except ValueError:
+        return "-"
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m {sec}s"
+    if minutes:
+        return f"{minutes}m {sec}s"
+    return f"{sec}s"
+
+
+def _render_result_message(message: str) -> str:
+    if not message:
+        return '<p class="muted">无结果信息。</p>'
+    return _render_markdown(message)
+
+
+def _screenshot_frame(screenshot: str, action: dict[str, Any] | None, alt: str) -> str:
+    if not screenshot:
+        return '<div class="empty-shot">无截图</div>'
+    marker = _action_marker(action)
+    marker_attrs = _action_marker_attrs(action)
+    return (
+        f'<a class="shot-frame" href="{_h(screenshot)}"{marker_attrs}>'
+        f'<img src="{_h(screenshot)}" alt="{_h(alt)}">'
+        '<span class="coord-overlay">'
+        '<span class="origin-label">0,0</span>'
+        '<span class="axis-label axis-x">x px</span><span class="axis-label axis-y">y px</span>'
+        '<span class="tick-layer"></span>'
+        "</span>"
+        f"{marker}"
+        "</a>"
+        '<button class="coord-toggle" type="button">显示坐标</button>'
+        '<div class="coord-caption">坐标：无点击坐标</div>'
+    )
+
+
+def _action_marker(action: dict[str, Any] | None) -> str:
+    if not _action_marker_attrs(action):
+        return ""
+    return '<span class="tap-marker"><span></span></span>'
+
+
+def _action_marker_attrs(action: dict[str, Any] | None) -> str:
+    if not action:
+        return ""
+    point = action.get("element")
+    if not (
+        isinstance(point, list)
+        and len(point) >= 2
+        and isinstance(point[0], (int, float))
+        and isinstance(point[1], (int, float))
+    ):
+        return ""
+    x = max(0, min(1000, float(point[0])))
+    y = max(0, min(1000, float(point[1])))
+    return f' data-action-x="{x:.2f}" data-action-y="{y:.2f}"'
+
+
 def _display_title(case: CaseReport) -> str:
     match = re.search(r"^##\s+TC-WEARFIT-\S+\s+(.+)$", case.task, re.MULTILINE)
     if match:
@@ -737,6 +840,73 @@ def _display_title(case: CaseReport) -> str:
     if title.startswith("## "):
         return title[3:].strip()
     return title
+
+
+def _render_markdown(markdown: str) -> str:
+    """Render a small Markdown subset used by generated test cases."""
+    lines = markdown.splitlines()
+    html_lines: list[str] = []
+    in_list = False
+    in_code = False
+    code_lines: list[str] = []
+
+    def close_list() -> None:
+        nonlocal in_list
+        if in_list:
+            html_lines.append("</ul>")
+            in_list = False
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if in_code:
+                html_lines.append(f"<pre><code>{_h(chr(10).join(code_lines))}</code></pre>")
+                code_lines = []
+                in_code = False
+            else:
+                close_list()
+                in_code = True
+            continue
+        if in_code:
+            code_lines.append(line)
+            continue
+        if not stripped:
+            close_list()
+            continue
+        if stripped.startswith("### "):
+            close_list()
+            html_lines.append(f"<h3>{_h(stripped[4:])}</h3>")
+            continue
+        if stripped.startswith("## "):
+            close_list()
+            html_lines.append(f"<h2>{_h(stripped[3:])}</h2>")
+            continue
+        if stripped.startswith("- "):
+            if not in_list:
+                html_lines.append("<ul>")
+                in_list = True
+            html_lines.append(f"<li>{_inline_markdown(stripped[2:])}</li>")
+            continue
+        step_match = re.match(r"^(\d+)\.\s+(.+)$", stripped)
+        if step_match:
+            close_list()
+            html_lines.append(
+                f'<p class="md-step"><strong>{_h(step_match.group(1))}.</strong> '
+                f"{_inline_markdown(step_match.group(2))}</p>"
+            )
+            continue
+        html_lines.append(f"<p>{_inline_markdown(stripped)}</p>")
+
+    close_list()
+    if in_code:
+        html_lines.append(f"<pre><code>{_h(chr(10).join(code_lines))}</code></pre>")
+    return "\n".join(html_lines)
+
+
+def _inline_markdown(text: str) -> str:
+    escaped = _h(text)
+    return re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
 
 
 def _shorten(value: str, max_len: int) -> str:
@@ -818,7 +988,7 @@ a:hover { text-decoration: underline; }
   background: linear-gradient(135deg, #60a5fa, #22c55e);
   box-shadow: 0 10px 30px rgba(96, 165, 250, .35);
 }
-.brand strong { display: block; font-size: 17px; color: #fff; }
+.brand strong { display: block; font-size: 22px; color: #fff; letter-spacing: 0; }
 .brand small { display: block; color: #93c5fd; }
 .side-nav {
   display: grid;
@@ -844,6 +1014,35 @@ a:hover { text-decoration: underline; }
 }
 .content { padding: 28px 32px 42px; min-width: 0; }
 .page { max-width: 1280px; margin: 0 auto; padding: 24px; }
+.detail-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  height: 58px;
+  padding: 0 24px;
+  background: rgba(255,255,255,.92);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+}
+.back-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #111827;
+  background: #f1f5f9;
+  border: 1px solid #dbe3ef;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-weight: 700;
+}
+.back-button:hover {
+  background: #e2e8f0;
+  text-decoration: none;
+}
 .topbar,
 .hero {
   display: flex;
@@ -859,6 +1058,35 @@ h3 { font-size: 15px; }
 p { margin: 8px 0; }
 .hero p, .muted, .subtle, .case-table span { color: var(--muted); }
 .subtle { margin: 6px 0 0; }
+.detail-hero {
+  align-items: flex-start;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 18px;
+  box-shadow: var(--shadow);
+}
+.case-meta {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 6px 14px;
+  min-width: 280px;
+  margin: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+.case-meta dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.case-meta dd {
+  margin: 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -1044,6 +1272,65 @@ pre {
   max-height: 280px;
   overflow: auto;
 }
+.task-panel { padding-bottom: 0; }
+.result-panel {
+  border-left: 5px solid #2563eb;
+}
+.result-message {
+  max-height: 360px;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid #bfdbfe;
+  border-radius: 12px;
+  background: #eff6ff;
+}
+.result-message h2,
+.result-message h3 {
+  color: #1e3a8a;
+}
+.result-message p,
+.result-message li {
+  color: #172554;
+}
+.markdown-body {
+  max-height: 520px;
+  overflow: auto;
+  padding: 4px 4px 16px;
+  border-top: 1px solid var(--line);
+}
+.markdown-body h2 {
+  margin: 16px 0 10px;
+  font-size: 17px;
+}
+.markdown-body h3 {
+  margin: 16px 0 8px;
+  font-size: 14px;
+  color: #334155;
+}
+.markdown-body p {
+  margin: 7px 0;
+}
+.markdown-body ul {
+  margin: 6px 0 12px 18px;
+  padding: 0;
+}
+.markdown-body li {
+  margin: 5px 0;
+}
+.markdown-body code {
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  color: #3730a3;
+  border-radius: 6px;
+  padding: 1px 5px;
+}
+.markdown-body .md-step {
+  margin-top: 12px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+}
 .defect-list { display: grid; gap: 14px; }
 .defect-card {
   display: grid;
@@ -1054,11 +1341,10 @@ pre {
   background: linear-gradient(180deg, #fff 0%, #fbfcff 100%);
   padding: 12px;
 }
-.defect-shot img,
+.defect-shot .shot-frame,
 .defect-shot .empty-shot {
   width: 100%;
   height: 240px;
-  object-fit: contain;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #eef2f7;
@@ -1125,13 +1411,162 @@ pre {
   gap: 14px;
   margin-bottom: 12px;
 }
-.step-shot img, .issue-shot img {
+.step-shot .shot-frame,
+.issue-shot .shot-frame {
   width: 100%;
-  max-height: 520px;
-  object-fit: contain;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #eef1f4;
+}
+.step-shot .shot-frame,
+.issue-shot .shot-frame {
+  height: auto;
+}
+.shot-frame {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  background: #eef2f7;
+}
+.shot-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+.defect-shot .shot-frame img {
+  height: 100%;
+}
+.coord-overlay,
+.coord-overlay::before,
+.coord-overlay::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+}
+.coord-overlay {
+  background:
+    linear-gradient(to right, rgba(37, 99, 235, .18) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(37, 99, 235, .18) 1px, transparent 1px);
+  background-size: 25% 25%;
+}
+.coord-overlay::before,
+.coord-overlay::after {
+  background: rgba(15, 23, 42, .28);
+}
+.coord-overlay::before {
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  bottom: auto;
+  background: rgba(29, 78, 216, .75);
+}
+.coord-overlay::after {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  right: auto;
+  background: rgba(29, 78, 216, .75);
+}
+.show-coords .coord-overlay,
+.show-coords .coord-overlay::before,
+.show-coords .coord-overlay::after {
+  opacity: 1;
+}
+.origin-label,
+.axis-label,
+.pixel-tick {
+  position: absolute;
+  z-index: 2;
+  color: #1d4ed8;
+  background: rgba(255,255,255,.86);
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 800;
+  pointer-events: none;
+  opacity: 0;
+}
+.show-coords .origin-label,
+.show-coords .axis-label,
+.show-coords .pixel-tick { opacity: 1; }
+.origin-label { left: 6px; top: 6px; }
+.axis-x { right: 8px; top: 6px; }
+.axis-y { left: 6px; bottom: 8px; }
+.pixel-tick::before {
+  content: "";
+  position: absolute;
+  background: rgba(29, 78, 216, .7);
+}
+.tick-x {
+  top: 6px;
+  transform: translateX(-50%);
+}
+.tick-x::before {
+  left: 50%;
+  top: 20px;
+  width: 1px;
+  height: 12px;
+}
+.tick-y {
+  left: 6px;
+  transform: translateY(-50%);
+}
+.tick-y::before {
+  left: 48px;
+  top: 50%;
+  width: 12px;
+  height: 1px;
+}
+.tap-marker {
+  position: absolute;
+  z-index: 4;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  margin-top: -6px;
+  border-radius: 999px;
+  background: #ef4444;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, .35), 0 8px 20px rgba(239, 68, 68, .35);
+}
+.tap-marker span {
+  position: absolute;
+  left: 14px;
+  top: -9px;
+  white-space: nowrap;
+  color: #991b1b;
+  background: #fff;
+  border: 1px solid #fecaca;
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 800;
+  opacity: 0;
+}
+.tap-marker:hover span,
+.show-coords .tap-marker span { opacity: 1; }
+.coord-toggle {
+  margin-top: 8px;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.coord-caption {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 .empty-shot {
   min-height: 160px;
@@ -1175,4 +1610,117 @@ pre {
 @media (max-width: 1100px) {
   .overview-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+"""
+
+
+def _report_js() -> str:
+    return r"""
+(function () {
+  function renderFrame(frame) {
+    const img = frame.querySelector("img");
+    const ticks = frame.querySelector(".tick-layer");
+    const overlay = frame.querySelector(".coord-overlay");
+    const marker = frame.querySelector(".tap-marker");
+    if (!img || !ticks) return;
+
+    const width = img.naturalWidth || img.clientWidth;
+    const height = img.naturalHeight || img.clientHeight;
+    if (!width || !height) return;
+
+    const boxWidth = frame.clientWidth;
+    const boxHeight = frame.clientHeight || img.clientHeight;
+    const imageRatio = width / height;
+    const boxRatio = boxWidth / boxHeight;
+    let contentWidth = boxWidth;
+    let contentHeight = boxHeight;
+    let contentLeft = 0;
+    let contentTop = 0;
+    if (boxRatio > imageRatio) {
+      contentHeight = boxHeight;
+      contentWidth = contentHeight * imageRatio;
+      contentLeft = (boxWidth - contentWidth) / 2;
+    } else {
+      contentWidth = boxWidth;
+      contentHeight = contentWidth / imageRatio;
+      contentTop = (boxHeight - contentHeight) / 2;
+    }
+
+    if (overlay) {
+      overlay.style.left = contentLeft + "px";
+      overlay.style.top = contentTop + "px";
+      overlay.style.width = contentWidth + "px";
+      overlay.style.height = contentHeight + "px";
+    }
+
+    ticks.innerHTML = "";
+    const xCount = 4;
+    const yCount = 4;
+    for (let i = 1; i <= xCount; i += 1) {
+      const pct = (i / xCount) * 100;
+      const value = Math.round((i / xCount) * width);
+      const tick = document.createElement("span");
+      tick.className = "pixel-tick tick-x";
+      tick.style.left = pct + "%";
+      tick.textContent = value + "px";
+      ticks.appendChild(tick);
+    }
+    for (let i = 1; i <= yCount; i += 1) {
+      const pct = (i / yCount) * 100;
+      const value = Math.round((i / yCount) * height);
+      const tick = document.createElement("span");
+      tick.className = "pixel-tick tick-y";
+      tick.style.top = pct + "%";
+      tick.textContent = value + "px";
+      ticks.appendChild(tick);
+    }
+
+    if (marker && frame.dataset.actionX && frame.dataset.actionY) {
+      const normalizedX = Number(frame.dataset.actionX);
+      const normalizedY = Number(frame.dataset.actionY);
+      const pixelX = Math.round((normalizedX / 1000) * width);
+      const pixelY = Math.round((normalizedY / 1000) * height);
+      marker.style.left = (contentLeft + (normalizedX / 1000) * contentWidth) + "px";
+      marker.style.top = (contentTop + (normalizedY / 1000) * contentHeight) + "px";
+      const label = marker.querySelector("span");
+      if (label) {
+        label.textContent = pixelX + "," + pixelY + "px";
+      }
+      const caption = frame.parentElement && frame.parentElement.querySelector(".coord-caption");
+      if (caption) {
+        caption.textContent = "点击坐标：model=[" + Math.round(normalizedX) + "," + Math.round(normalizedY) + "], pixel≈[" + pixelX + "," + pixelY + "]";
+      }
+    }
+  }
+
+  function init() {
+    const frames = Array.from(document.querySelectorAll(".shot-frame"));
+    frames.forEach(function (frame) {
+      const img = frame.querySelector("img");
+      if (img && !img.complete) {
+        img.addEventListener("load", function () { renderFrame(frame); }, { once: true });
+      } else {
+        renderFrame(frame);
+      }
+    });
+    window.addEventListener("resize", function () {
+      frames.forEach(renderFrame);
+    });
+    document.querySelectorAll(".coord-toggle").forEach(function (button) {
+      button.addEventListener("click", function (event) {
+        event.preventDefault();
+        const container = button.parentElement;
+        const frame = container && container.querySelector(".shot-frame");
+        if (!frame) return;
+        frame.classList.toggle("show-coords");
+        button.textContent = frame.classList.contains("show-coords") ? "隐藏坐标" : "显示坐标";
+      });
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
 """
