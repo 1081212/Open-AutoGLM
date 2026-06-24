@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from openai import OpenAI
@@ -37,6 +38,17 @@ from phone_agent.xctest import XCTestConnection
 from phone_agent.xctest import list_devices as list_ios_devices
 
 
+@dataclass
+class ParsedTestCase:
+    """从 Markdown 测试用例文件中解析出的单条用例。"""
+
+    case_id: str | None
+    title: str | None
+    rule_type: str | None
+    priority: str | None
+    task: str
+
+
 def parse_test_case_heading(task: str) -> tuple[str | None, str | None, str | None]:
     """从测试用例 Markdown 的二级标题中解析用例 ID、标题和规则类型。
 
@@ -45,12 +57,66 @@ def parse_test_case_heading(task: str) -> tuple[str | None, str | None, str | No
 
     当前只做轻量解析，用于执行前打印和后续 rule 上下文扩展。
     """
-    pattern = re.compile(r"^##\s+(TC-WEARFIT-[A-Za-z0-9]+-\d{3}-([A-Za-z0-9]+))\s+(.+)$")
+    pattern = re.compile(r"^##\s+(TC-WEARFIT-[A-Za-z0-9]+-\d{3}-(normal|audio))\s+(.+)$")
     for line in task.splitlines():
         match = pattern.match(line.strip())
         if match:
             return match.group(1), match.group(3).strip(), match.group(2)
     return None, None, None
+
+
+def parse_test_case_priority(task: str) -> str | None:
+    """解析测试用例基本信息中的优先级字段。"""
+    pattern = re.compile(r"^\s*-\s*优先级\s*[:：]\s*(.+?)\s*$", re.MULTILINE)
+    match = pattern.search(task)
+    return match.group(1).strip() if match else None
+
+
+def parse_test_case(task: str) -> ParsedTestCase:
+    """解析单条测试用例文本，保留完整文本作为 agent task。"""
+    case_id, title, rule_type = parse_test_case_heading(task)
+    priority = parse_test_case_priority(task)
+    return ParsedTestCase(
+        case_id=case_id,
+        title=title,
+        rule_type=rule_type,
+        priority=priority,
+        task=task.strip(),
+    )
+
+
+def parse_test_cases_from_markdown(content: str) -> list[ParsedTestCase]:
+    """按测试用例规范从 Markdown 文件中解析所有用例。
+
+    只以二级标题作为用例起始标记，不依赖 --- 分隔线。
+    """
+    heading_pattern = re.compile(
+        r"^##\s+(TC-WEARFIT-[A-Za-z0-9]+-\d{3}-(normal|audio))\s+(.+)$",
+        re.MULTILINE,
+    )
+    matches = list(heading_pattern.finditer(content))
+    cases: list[ParsedTestCase] = []
+
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+        block = content[start:end].strip()
+        cases.append(parse_test_case(block))
+
+    return cases
+
+
+def load_test_cases_from_file(file_path: str) -> list[ParsedTestCase]:
+    """读取 Markdown 文件并解析测试用例列表。"""
+    with open(file_path, "r", encoding="utf-8") as file:
+        content = file.read()
+    cases = parse_test_cases_from_markdown(content)
+    if not cases:
+        raise ValueError(
+            "No test cases found. Expected headings like "
+            "'## TC-WEARFIT-MODULE-001-normal 用例标题'."
+        )
+    return cases
 
 
 def print_test_case_heading(task: str) -> None:
@@ -421,6 +487,9 @@ Examples:
     # List connected iOS devices
     python main.py --device-type ios --list-devices
 
+    # Run all test cases from a Markdown file
+    python main.py --file docs/wearfit_cases.md
+
     # Check WebDriverAgent status
     python main.py --device-type ios --wda-status
 
@@ -557,13 +626,33 @@ Examples:
     )
 
     parser.add_argument(
+        "--file",
+        type=str,
+        help="Markdown test case file. Mutually exclusive with positional tasks.",
+    )
+
+    parser.add_argument(
+        "--priority",
+        action="append",
+        help=(
+            "Only run test cases with the given priority from --file. "
+            "Can be used multiple times, e.g. --priority P0 --priority P1."
+        ),
+    )
+
+    parser.add_argument(
         "tasks",
         nargs="*",
         type=str,
         help="Tasks to execute one by one (interactive mode if not provided)",
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.file and args.tasks:
+        parser.error("--file cannot be used together with positional tasks")
+    if args.priority and not args.file:
+        parser.error("--priority can only be used together with --file")
+    return args
 
 
 def handle_ios_device_commands(args) -> bool:
@@ -875,11 +964,42 @@ def main():
 
     print("=" * 50)
 
-    # Run with provided tasks or enter interactive mode
-    if args.tasks:
-        total_tasks = len(args.tasks)
-        for index, task in enumerate(args.tasks, start=1):
-            print(f"\nTask {index}/{total_tasks}: {task}\n")
+    # Run with provided tasks, Markdown test case file, or enter interactive mode
+    test_cases: list[ParsedTestCase] = []
+    if args.file:
+        test_cases = load_test_cases_from_file(args.file)
+        loaded_count = len(test_cases)
+        if args.priority:
+            selected_priorities = {priority.upper() for priority in args.priority}
+            test_cases = [
+                test_case
+                for test_case in test_cases
+                if (test_case.priority or "").upper() in selected_priorities
+            ]
+            priority_text = ", ".join(sorted(selected_priorities))
+            print(
+                f"\nLoaded {loaded_count} test case(s) from {args.file}; "
+                f"{len(test_cases)} matched priority: {priority_text}"
+            )
+            if not test_cases:
+                raise ValueError(f"No test cases matched priority: {priority_text}")
+        else:
+            print(f"\nLoaded {loaded_count} test case(s) from {args.file}")
+    elif args.tasks:
+        test_cases = [parse_test_case(task) for task in args.tasks]
+
+    if test_cases:
+        total_tasks = len(test_cases)
+        for index, test_case in enumerate(test_cases, start=1):
+            task = test_case.task
+            case_label = test_case.case_id or f"Task {index}"
+            title = f" - {test_case.title}" if test_case.title else ""
+            rule_type = test_case.rule_type or "unknown"
+            priority = test_case.priority or "unknown"
+            print(
+                f"\nTask {index}/{total_tasks}: "
+                f"{case_label} [{rule_type}, {priority}]{title}\n"
+            )
             print_test_case_heading(task)
             reporter.start_case(task, index)
             result = agent.run(task)
