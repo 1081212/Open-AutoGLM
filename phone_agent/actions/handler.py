@@ -92,6 +92,8 @@ class ActionHandler:
         handlers = {
             "Launch": self._handle_launch,
             "Tap": self._handle_tap,
+            "TapElement": self._handle_tap_element,
+            "TypeIntoElement": self._handle_type_into_element,
             "Type": self._handle_type,
             "Type_Name": self._handle_type,
             "Swipe": self._handle_swipe,
@@ -254,6 +256,91 @@ class ActionHandler:
         # This action signals that user input is needed
         return ActionResult(True, False, message="User interaction required")
 
+    def _build_u2_selector(self, action: dict):
+        """根据 action 中的选择器字段构建 UIAutomator2 元素查询对象。
+
+        这是 rule 专用的元素级操作能力。普通模型动作仍然走坐标 Tap/Type，
+        只有使用 tap_element/type_into_element 时才会懒加载 uiautomator2。
+        """
+        try:
+            from phone_agent.adb.u2_connection import get_u2_device
+        except ImportError as exc:
+            raise RuntimeError(
+                "tap_element/type_into_element 需要安装可选依赖 uiautomator2"
+            ) from exc
+
+        device = get_u2_device(self.device_id)
+        selector: dict[str, Any] = {}
+        key_map = {
+            "resource_id": "resourceId",
+            "content_desc": "description",
+            "class_name": "className",
+        }
+        for src, dst in key_map.items():
+            if action.get(src) is not None:
+                selector[dst] = action[src]
+        for key in (
+            "text",
+            "textContains",
+            "textStartsWith",
+            "resourceId",
+            "description",
+            "className",
+        ):
+            if action.get(key) is not None:
+                selector[key] = action[key]
+
+        if not selector:
+            raise ValueError(
+                "tap_element/type_into_element 至少需要一个选择器："
+                "text、resource_id、content_desc 或 class_name"
+            )
+        return device(**selector)
+
+    def _handle_tap_element(
+        self, action: dict, width: int, height: int
+    ) -> ActionResult:
+        """按 UI 元素选择器点击控件，而不是按坐标点击。"""
+        timeout = float(action.get("timeout", 5))
+        element = self._build_u2_selector(action)
+        if not element.wait(timeout=timeout):
+            return ActionResult(
+                False, False, f"Element not found: {action} (timeout={timeout}s)"
+            )
+        element.click()
+        return ActionResult(True, False)
+
+    def _handle_type_into_element(
+        self, action: dict, width: int, height: int
+    ) -> ActionResult:
+        """按 UI 元素选择器找到输入框，清空后写入文本。"""
+        input_text = action.get("input_text", "")
+        timeout = float(action.get("timeout", 5))
+        clear = action.get("clear", True)
+        selector_action = {
+            key: value
+            for key, value in action.items()
+            if key
+            not in {
+                "_metadata",
+                "action",
+                "input_text",
+                "timeout",
+                "clear",
+            }
+        }
+        element = self._build_u2_selector(selector_action)
+        if not element.wait(timeout=timeout):
+            return ActionResult(
+                False,
+                False,
+                f"Element not found: {selector_action} (timeout={timeout}s)",
+            )
+        if clear:
+            element.clear_text()
+        element.set_text(input_text)
+        return ActionResult(True, False)
+
     def _send_keyevent(self, keycode: str) -> None:
         """Send a keyevent to the device."""
         from phone_agent.device_factory import DeviceType, get_device_factory
@@ -403,6 +490,33 @@ def finish(**kwargs) -> dict[str, Any]:
     return kwargs
 
 
+def tap_element(**kwargs) -> dict[str, Any]:
+    """构造按元素选择器点击的 action。
+
+    支持的选择器字段：
+    - text：按控件显示文字精确匹配
+    - resource_id：按 Android resource-id 匹配
+    - content_desc：按无障碍描述匹配
+    - class_name：按控件 className 匹配
+    - textContains/textStartsWith：按文字包含/前缀匹配
+    """
+    kwargs["_metadata"] = "do"
+    kwargs["action"] = "TapElement"
+    return kwargs
+
+
+def type_into_element(input_text: str, **kwargs) -> dict[str, Any]:
+    """构造按元素选择器输入文本的 action。
+
+    input_text 是要输入的文本；其它参数作为选择器或控制项使用。
+    默认会先清空控件文本，可传 clear=False 关闭。
+    """
+    kwargs["_metadata"] = "do"
+    kwargs["action"] = "TypeIntoElement"
+    kwargs["input_text"] = input_text
+    return kwargs
+
+
 def normalize_action_name(action_name: Any) -> Any:
     """Normalize common model variants to executable action names."""
     if not isinstance(action_name, str):
@@ -415,5 +529,9 @@ def normalize_action_name(action_name: Any) -> Any:
         "take over": "Take_over",
         "tack_over": "Take_over",
         "tackover": "Take_over",
+        "tap_element": "TapElement",
+        "tapelement": "TapElement",
+        "type_into_element": "TypeIntoElement",
+        "typeintoelement": "TypeIntoElement",
     }
     return aliases.get(action_name.strip().lower(), action_name)
