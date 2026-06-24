@@ -1009,6 +1009,7 @@ def main():
             agent.reset()
         reporter.finish_run()
         print(f"\nSummary report: {reporter.root_dir / 'summary.md'}")
+        print(f"HTML report: {reporter.root_dir / 'index.html'}")
     else:
         # Interactive mode
         print("\nEntering interactive mode. Type 'quit' to exit.\n")
@@ -1034,6 +1035,7 @@ def main():
                 agent.reset()
                 reporter.finish_run()
                 print(f"Summary report: {reporter.root_dir / 'summary.md'}\n")
+                print(f"HTML report: {reporter.root_dir / 'index.html'}\n")
 
             except KeyboardInterrupt:
                 print("\n\nInterrupted. Goodbye!")

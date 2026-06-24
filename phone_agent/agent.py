@@ -36,7 +36,7 @@ ISSUE_KEYWORDS = (
 class AgentConfig:
     """Configuration for the PhoneAgent."""
 
-    max_steps: int = 100
+    max_steps: int = 30
     device_id: str | None = None
     lang: str = "cn"
     system_prompt: str | None = None
@@ -319,7 +319,7 @@ class PhoneAgent:
             action = finish(message=response.action)
 
         action_response = response.action
-        action = self._convert_bug_finish_to_note(action)
+        # action = self._convert_bug_finish_to_note(action)
         if action.get("action") == "Note" and action_response != response.action:
             action_response = self._format_action_for_context(action)
 

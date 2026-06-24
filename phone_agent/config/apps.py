@@ -185,6 +185,13 @@ APP_PACKAGES: dict[str, str] = {
     "wechat": "com.tencent.mm",
     "Whatsapp": "com.whatsapp",
     "WhatsApp": "com.whatsapp",
+    "Wearfit Pro": "com.wakeup.howear",
+    "WearfitPro": "com.wakeup.howear",
+    "Wearfit": "com.wakeup.howear",
+    "wearfit pro": "com.wakeup.howear",
+    "wearfit": "com.wakeup.howear",
+    "超级app": "com.wakeup.howear",
+    "com.wakeup.howear": "com.wakeup.howear",
 }
 
 
