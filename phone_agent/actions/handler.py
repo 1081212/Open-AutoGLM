@@ -3,8 +3,11 @@
 import ast
 import re
 import subprocess
+import threading
 import time
+import wave
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from phone_agent.config.timing import TIMING_CONFIG
@@ -94,6 +97,7 @@ class ActionHandler:
             "Tap": self._handle_tap,
             "TapElement": self._handle_tap_element,
             "TypeIntoElement": self._handle_type_into_element,
+            "PlayAudioWhileHoldingElement": self._handle_play_audio_while_holding_element,
             "Type": self._handle_type,
             "Type_Name": self._handle_type,
             "Swipe": self._handle_swipe,
@@ -341,6 +345,93 @@ class ActionHandler:
         element.set_text(input_text)
         return ActionResult(True, False)
 
+    def _resolve_audio_path(self, audio_path: str) -> Path:
+        """解析音频路径；相对路径默认相对项目根目录。"""
+        path = Path(audio_path)
+        if path.is_absolute():
+            return path
+        project_root = Path(__file__).resolve().parents[2]
+        return project_root / path
+
+    def _get_wav_duration_seconds(self, path: Path) -> float:
+        """读取 wav 时长；读取失败时使用保守默认值。"""
+        try:
+            with wave.open(str(path), "rb") as wav_file:
+                return wav_file.getnframes() / float(wav_file.getframerate())
+        except Exception:
+            return 6.0
+
+    def _handle_play_audio_while_holding_element(
+        self, action: dict, width: int, height: int
+    ) -> ActionResult:
+        """按住手机端元素，同时在电脑端播放音频。
+
+        这是音频类 CustomRule 使用的动作。参数全部写在 action dict 中，
+        便于后续从 YAML 或其它结构化配置生成。
+        """
+        audio_path = self._resolve_audio_path(action.get("audio_path", "xiaoxiao.wav"))
+        if not audio_path.exists():
+            return ActionResult(False, False, f"Audio file not found: {audio_path}")
+
+        timeout = float(action.get("timeout", 5))
+        press_lead_seconds = float(action.get("press_lead_seconds", 0.3))
+        min_hold_seconds = float(action.get("min_hold_seconds", 3.0))
+        player = action.get("player", "afplay")
+
+        selector_action = {
+            key: value
+            for key, value in action.items()
+            if key
+            not in {
+                "_metadata",
+                "action",
+                "audio_path",
+                "timeout",
+                "press_lead_seconds",
+                "min_hold_seconds",
+                "player",
+                "hold_seconds",
+            }
+        }
+        element = self._build_u2_selector(selector_action)
+        if not element.wait(timeout=timeout):
+            return ActionResult(
+                False,
+                False,
+                f"Element not found: {selector_action} (timeout={timeout}s)",
+            )
+
+        bounds = element.info.get("bounds") or {}
+        try:
+            x = int((bounds["left"] + bounds["right"]) / 2)
+            y = int((bounds["top"] + bounds["bottom"]) / 2)
+        except KeyError:
+            return ActionResult(False, False, "Element bounds are incomplete")
+
+        hold_seconds = float(
+            action.get(
+                "hold_seconds",
+                max(self._get_wav_duration_seconds(audio_path) + 1.0, min_hold_seconds),
+            )
+        )
+
+        def hold_button() -> None:
+            element.long_click(duration=hold_seconds)
+
+        hold_thread = threading.Thread(target=hold_button, daemon=True)
+        hold_thread.start()
+        time.sleep(press_lead_seconds)
+
+        result = subprocess.run([player, str(audio_path)], capture_output=True, text=True)
+        hold_thread.join(timeout=hold_seconds + 2)
+        if result.returncode != 0:
+            return ActionResult(
+                False,
+                False,
+                f"Audio player failed: {(result.stderr or result.stdout).strip()}",
+            )
+        return ActionResult(True, False)
+
     def _send_keyevent(self, keycode: str) -> None:
         """Send a keyevent to the device."""
         from phone_agent.device_factory import DeviceType, get_device_factory
@@ -517,6 +608,22 @@ def type_into_element(input_text: str, **kwargs) -> dict[str, Any]:
     return kwargs
 
 
+def play_audio_while_holding_element(audio_path: str, **kwargs) -> dict[str, Any]:
+    """构造“按住手机元素并播放电脑音频”的 action。
+
+    示例：
+        play_audio_while_holding_element(
+            audio_path="xiaoxiao.wav",
+            textContains="按住",
+            timeout=5,
+        )
+    """
+    kwargs["_metadata"] = "do"
+    kwargs["action"] = "PlayAudioWhileHoldingElement"
+    kwargs["audio_path"] = audio_path
+    return kwargs
+
+
 def normalize_action_name(action_name: Any) -> Any:
     """Normalize common model variants to executable action names."""
     if not isinstance(action_name, str):
@@ -533,5 +640,7 @@ def normalize_action_name(action_name: Any) -> Any:
         "tapelement": "TapElement",
         "type_into_element": "TypeIntoElement",
         "typeintoelement": "TypeIntoElement",
+        "play_audio_while_holding_element": "PlayAudioWhileHoldingElement",
+        "playaudiowhileholdingelement": "PlayAudioWhileHoldingElement",
     }
     return aliases.get(action_name.strip().lower(), action_name)

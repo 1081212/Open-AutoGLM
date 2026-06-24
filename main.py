@@ -830,7 +830,13 @@ def main():
         )
 
         from phone_agent.agent import CustomRule
-        from phone_agent.actions.handler import do, finish, tap_element, type_into_element
+        from phone_agent.actions.handler import (
+            do,
+            finish,
+            play_audio_while_holding_element,
+            tap_element,
+            type_into_element,
+        )
 
         my_rules = [
             # --------------------------------------------------
@@ -877,6 +883,29 @@ def main():
                     "【系统提示】已自动完成 Wearfit Pro 的账号登录，"
                     "登录成功，现在已进入应用主页。"
                     "无需再执行任何登录操作，直接根据当前截图继续完成原任务。"
+                ),
+            ),
+            CustomRule(
+                name="音频类-播放音频并长按语音按钮测试",
+                condition=lambda ctx: (
+                    ctx.activity == "com.wakeup.feature.translate.TranslateHomeActivity"
+                    and "audio" in ctx.task
+                ),
+                action=[
+                    play_audio_while_holding_element(
+                        audio_path="xiaoxiao.wav",
+                        textContains="说中文",
+                        timeout=5,
+                        min_hold_seconds=3.0,
+                        press_lead_seconds=0.3,
+                    )
+                ],
+                max_fires=1,
+                post_delay=3.0,
+                context_note=(
+                    "【系统提示】已执行音频类自动规则："
+                    "电脑端已播放测试音频，手机端已长按语音按钮完成一次语音输入。"
+                    "请根据当前截图继续检查识别结果是否符合测试用例预期。"
                 ),
             ),
 
