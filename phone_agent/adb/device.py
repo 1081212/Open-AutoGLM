@@ -26,7 +26,7 @@ def get_current_app(device_id: str | None = None) -> str:
     )
     output = result.stdout
     if not output:
-        raise ValueError("No output from dumpsys window")
+        return "System Home"
 
     # Parse window focus info
     for line in output.split("\n"):

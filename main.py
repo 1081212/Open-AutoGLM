@@ -32,6 +32,7 @@ from phone_agent.config.apps_ios import list_supported_apps as list_ios_apps
 from phone_agent.device_factory import DeviceType, get_device_factory, set_device_type
 from phone_agent.model import ModelConfig
 from phone_agent.reporting import TestRunReporter
+from phone_agent.rule_loader import load_rules
 from phone_agent.xctest import XCTestConnection
 from phone_agent.xctest import list_devices as list_ios_devices
 
@@ -829,106 +830,7 @@ def main():
             reporter=reporter,
         )
 
-        from phone_agent.agent import CustomRule
-        from phone_agent.actions.handler import (
-            do,
-            finish,
-            play_audio_while_holding_element,
-            tap_element,
-            type_into_element,
-        )
-
-        my_rules = [
-            # --------------------------------------------------
-            # 方式 2：按控件元素点击（推荐）
-            #   ctx.activity = 当前 Activity 全名，例如：
-            #     "com.meituan.android.pt.main.MainActivity"
-            #   tap_element 支持以下选择器（至少填一个）：
-            #     text=          按显示文字找
-            #     resource_id=   按 resourceId 找  (adb uiautomator dump 可查)
-            #     content_desc=  按无障碍描述找
-            #     class_name=    按 View 类型找
-            # --------------------------------------------------
-            CustomRule(
-                name="超级app-登录",
-                condition=lambda ctx: ctx.activity == "com.wakeup.howear.login.LoginActivity",
-                action=[
-                    type_into_element(input_text="15311699022", text="手机号码"),
-                    type_into_element(input_text="meng1234", text="请输入密码"),
-                    tap_element(resource_id="com.wakeup.howear:id/agreeCheckBox"),
-                    tap_element(text="登录"),
-                ],
-                step_delay=1.0,
-                max_fires=1,  # 只登录一次
-                post_delay=3.0,  # 等待3秒让app跳转到主页
-                context_note=(
-                    "【系统提示】已自动完成 Wearfit Pro 的账号登录，"
-                    "登录成功，现在已进入应用主页。"
-                    "无需再执行任何登录操作，直接根据当前截图继续完成原任务。"
-                ),
-            ),
-            CustomRule(
-                name="超级app-",
-                condition=lambda ctx: ctx.activity == "com.wakeup.howear.login.LoginActivity",
-                action=[
-                    type_into_element(input_text="15311699022", text="手机号码"),
-                    type_into_element(input_text="meng1234", text="请输入密码"),
-                    tap_element(resource_id="com.wakeup.howear:id/agreeCheckBox"),
-                    tap_element(text="登录"),
-                ],
-                step_delay=1.0,
-                max_fires=1,  # 只登录一次
-                post_delay=3.0,  # 等待3秒让app跳转到主页
-                context_note=(
-                    "【系统提示】已自动完成 Wearfit Pro 的账号登录，"
-                    "登录成功，现在已进入应用主页。"
-                    "无需再执行任何登录操作，直接根据当前截图继续完成原任务。"
-                ),
-            ),
-            CustomRule(
-                name="音频类-播放音频并长按语音按钮测试",
-                condition=lambda ctx: (
-                    ctx.activity == "com.wakeup.feature.translate.TranslateHomeActivity"
-                    and "audio" in ctx.task
-                ),
-                action=[
-                    play_audio_while_holding_element(
-                        audio_path="xiaoxiao.wav",
-                        textContains="说中文",
-                        timeout=5,
-                        min_hold_seconds=3.0,
-                        press_lead_seconds=0.3,
-                    )
-                ],
-                max_fires=1,
-                post_delay=3.0,
-                context_note=(
-                    "【系统提示】已执行音频类自动规则："
-                    "电脑端已播放测试音频，手机端已长按语音按钮完成一次语音输入。"
-                    "请根据当前截图继续检查识别结果是否符合测试用例预期。"
-                ),
-            ),
-
-            # --------------------------------------------------
-            # 方式 3：直接用 UIAutomator2 操作（最灵活）
-            #   action callable 返回 None → 框架不再派发 action
-            #   ctx.device 是 uiautomator2.Device 对象
-            # --------------------------------------------------
-            # def handle_meituan(ctx):
-            #     d = ctx.device
-            #     d(text="搜索附近的餐厅").click()
-            #     import time; time.sleep(0.5)
-            #     d(resourceId="com.meituan.android:id/search_edit").set_text("奶茶")
-            #     d(text="搜索").click()
-            #     # 返回 None → 框架知道你已操作完毕
-            #
-            # CustomRule(
-            #     name="示例_直接UIAutomator2",
-            #     condition=lambda ctx: "MainActivity" in (ctx.activity or ""),
-            #     action=handle_meituan,
-            # ),
-        ]
-        # -------------------------------------------------------
+        my_rules = load_rules("rules")
 
         agent = PhoneAgent(
             model_config=model_config,

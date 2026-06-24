@@ -1,0 +1,43 @@
+rules:
+  - name: 超级app-登录
+    enabled: true
+    activity:
+      - com.wakeup.howear.login.LoginActivity
+    actions:
+      - type: type_into_element
+        input_text: "15311699022"
+        text: 手机号码
+      - type: type_into_element
+        input_text: "meng1234"
+        text: 请输入密码
+      - type: tap_element
+        resource_id: com.wakeup.howear:id/agreeCheckBox
+      - type: tap_element
+        text: 登录
+    step_delay: 1.0
+    max_fires: 1
+    post_delay: 3.0
+    context_note: >
+      【系统提示】已自动完成 Wearfit Pro 的账号登录，
+      登录成功，现在已进入应用主页。
+      无需再执行任何登录操作，直接根据当前截图继续完成原任务。
+
+  - name: 音频类-播放音频并长按语音按钮测试
+    enabled: true
+    activity:
+      - com.wakeup.feature.translate.TranslateHomeActivity
+    conditions:
+      task_contains: audio
+    actions:
+      - type: play_audio_while_holding_element
+        audio_path: xiaoxiao.wav
+        textContains: 说中文
+        timeout: 5
+        min_hold_seconds: 3.0
+        press_lead_seconds: 0.3
+    max_fires: 1
+    post_delay: 3.0
+    context_note: >
+      【系统提示】已执行音频类自动规则：
+      电脑端已播放测试音频，手机端已长按语音按钮完成一次语音输入。
+      请根据当前截图继续检查识别结果是否符合测试用例预期。

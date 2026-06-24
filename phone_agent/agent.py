@@ -4,7 +4,7 @@ import json
 import re
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from phone_agent.actions import ActionHandler
@@ -99,6 +99,7 @@ class CustomRule:
             | list[dict[str, Any]]
             | Callable[["RuleContext"], dict[str, Any] | list[dict[str, Any]] | None]
     )
+    activity: list[str] = field(default_factory=list)  # 先按 Activity 粗筛；空列表表示全局规则
     terminal: bool = False  # True → 规则执行完后任务结束
     step_delay: float = 1.0  # 多个动作之间的间隔秒数
     max_fires: int = 1  # 同一个 run() 内最多触发几次（0 = 不限）
@@ -237,7 +238,12 @@ class PhoneAgent:
         # Capture current screen state
         device_factory = get_device_factory()
         screenshot = device_factory.get_screenshot(self.agent_config.device_id)
-        current_app = device_factory.get_current_app(self.agent_config.device_id)
+        try:
+            current_app = device_factory.get_current_app(self.agent_config.device_id)
+        except Exception as exc:
+            if self.agent_config.verbose:
+                print(f"Warning: failed to get current app: {exc}")
+            current_app = "System Home"
         if self.agent_config.reporter:
             self.agent_config.reporter.save_step(
                 step=self._step_count,
@@ -390,7 +396,7 @@ class PhoneAgent:
             device=u2_device,
         )
 
-        for rule in self.custom_rules:
+        for rule in self._get_candidate_rules(activity):
             try:
                 fires = self._rule_fire_counts.get(rule.name, 0)
                 if rule.max_fires > 0 and fires >= rule.max_fires:
@@ -465,6 +471,17 @@ class PhoneAgent:
                     print(f"[Rule:{rule.name}] error: {exc}")
 
         return None
+
+    def _get_candidate_rules(self, activity: str) -> list[CustomRule]:
+        """先按 Activity 粗筛规则，减少无关 condition 的执行成本。"""
+        candidates: list[CustomRule] = []
+        for rule in self.custom_rules:
+            if not rule.activity:
+                candidates.append(rule)
+                continue
+            if activity in rule.activity:
+                candidates.append(rule)
+        return candidates
 
     def _append_rule_context_note(self, rule: CustomRule, action_count: int) -> None:
         """把规则执行结果写入上下文，提醒模型继续原任务。"""

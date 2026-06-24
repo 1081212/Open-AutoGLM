@@ -6,6 +6,7 @@ requests>=2.31.0
 
 # Optional: element-based CustomRule helpers (tap_element/type_into_element)
 uiautomator2>=3.4.2
+PyYAML>=6.0.0
 
 # For Model Deployment
 
