@@ -456,77 +456,15 @@ class TestRunReporter:
 
     def _write_summary_html(self) -> None:
         summary_path = self.root_dir / "index.html"
-        total = len(self.cases)
-        pass_count = sum(1 for case in self.cases if case.status == "PASS")
-        fail_count = sum(1 for case in self.cases if case.status == "FAIL")
-        blocked_count = sum(1 for case in self.cases if case.status == "BLOCKED")
-        other_count = total - pass_count - fail_count - blocked_count
-        non_pass_cases = [case for case in self.cases if case.status != "PASS"]
-
-        lines = [
-            "<!doctype html>",
-            '<html lang="zh-CN">',
-            "<head>",
-            '<meta charset="utf-8">',
-            '<meta name="viewport" content="width=device-width, initial-scale=1">',
-            "<title>AutoGLM Test Report</title>",
-            f"<style>{_report_css()}</style>",
-            "</head>",
-            "<body>",
-            '<main class="page">',
-            '<section class="hero">',
-            "<div><h1>AutoGLM 测试报告</h1>",
-            f"<p>{_h(self.run_started_at)} · {_h(str(self.root_dir))}</p></div>",
-            "</section>",
-            '<section class="meta-grid">',
-            _metric_card("用例总数", str(total)),
-            _metric_card("成功", str(pass_count), "pass"),
-            _metric_card("失败", str(fail_count), "fail"),
-            _metric_card("阻塞", str(blocked_count), "blocked"),
-            _metric_card("其他", str(other_count), "other"),
-            "</section>",
-            '<section class="panel">',
-            "<h2>环境信息</h2>",
-            '<dl class="env-list">',
-        ]
-        for key, value in self.environment.items():
-            if key == "apps":
-                continue
-            lines.append(f"<dt>{_h(str(key))}</dt><dd>{_h(str(value))}</dd>")
-        lines.extend(["</dl>", "</section>"])
-
-        lines.extend(['<section class="panel">', "<h2>非 PASS 用例</h2>"])
-        if non_pass_cases:
-            lines.append('<div class="issue-grid">')
-            for case in non_pass_cases:
-                lines.append(_render_issue_case_html(case))
-            lines.append("</div>")
-        else:
-            lines.append('<p class="muted">暂无非 PASS 用例。</p>')
-        lines.append("</section>")
-
-        lines.extend(
-            [
-                '<section class="panel">',
-                "<h2>全部用例</h2>",
-                '<table class="case-table">',
-                "<thead><tr><th>用例</th><th>状态</th><th>步骤</th><th>结果</th><th>报告</th></tr></thead>",
-                "<tbody>",
-            ]
+        summary_path.write_text(
+            _build_summary_html(
+                root_dir=self.root_dir,
+                run_started_at=self.run_started_at,
+                environment=self.environment,
+                cases=self.cases,
+            ),
+            encoding="utf-8",
         )
-        for case in self.cases:
-            report_link = f"{case.case_id}/report.html"
-            lines.append(
-                "<tr>"
-                f"<td><strong>{_h(case.case_id)}</strong><br><span>{_h(case.title)}</span></td>"
-                f'<td><span class="status {case.status.lower()}">{_h(case.status)}</span></td>'
-                f"<td>{len(case.steps)}</td>"
-                f"<td>{_h(case.result_message or '')}</td>"
-                f'<td><a href="{_h(report_link)}">查看详情</a></td>'
-                "</tr>"
-            )
-        lines.extend(["</tbody>", "</table>", "</section>", "</main>", "</body>", "</html>"])
-        summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
@@ -561,6 +499,141 @@ def _metric_card(label: str, value: str, tone: str = "") -> str:
         f'<div class="metric{tone_class}">'
         f"<span>{_h(label)}</span>"
         f"<strong>{_h(value)}</strong>"
+        "</div>"
+    )
+
+
+def _build_summary_html(
+    root_dir: Path,
+    run_started_at: str,
+    environment: dict[str, Any],
+    cases: list[CaseReport],
+) -> str:
+    total = len(cases)
+    pass_count = sum(1 for case in cases if case.status == "PASS")
+    fail_count = sum(1 for case in cases if case.status == "FAIL")
+    blocked_count = sum(1 for case in cases if case.status == "BLOCKED")
+    other_count = total - pass_count - fail_count - blocked_count
+    non_pass_cases = [case for case in cases if case.status != "PASS"]
+    pass_rate = round((pass_count / total) * 100) if total else 0
+    duration = _run_duration(cases)
+
+    lines = [
+        "<!doctype html>",
+        '<html lang="zh-CN">',
+        "<head>",
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        "<title>AutoGLM Test Report</title>",
+        f"<style>{_report_css()}</style>",
+        "</head>",
+        "<body>",
+        '<main class="shell">',
+        '<aside class="sidebar">',
+        '<div class="brand"><span class="brand-mark"></span><div><strong>AutoGLM</strong><small>Test Report</small></div></div>',
+        '<nav class="side-nav"><a href="#overview">Overview</a><a href="#defects">Defects</a><a href="#cases">Cases</a><a href="#environment">Environment</a></nav>',
+        '<div class="side-foot">Generated<br>' + _h(run_started_at) + "</div>",
+        "</aside>",
+        '<section class="content">',
+        '<header class="topbar">',
+        "<div>",
+        "<h1>测试执行报告</h1>",
+        f'<p class="subtle">{_h(str(root_dir))}</p>',
+        "</div>",
+        f'<div class="pass-ring" style="--value:{pass_rate}"><strong>{pass_rate}%</strong><span>PASS RATE</span></div>',
+        "</header>",
+        '<section id="overview" class="overview-grid">',
+        _summary_tile("Total", str(total), "全部用例", "total"),
+        _summary_tile("Passed", str(pass_count), "执行通过", "pass"),
+        _summary_tile("Failed", str(fail_count), "需要排查", "fail"),
+        _summary_tile("Blocked", str(blocked_count), "环境或流程阻塞", "blocked"),
+        _summary_tile("Other", str(other_count), "未完成/未知", "other"),
+        _summary_tile("Duration", duration, "首尾用例时间跨度", "duration"),
+        "</section>",
+        '<section class="panel split-panel">',
+        '<div><h2>Status Overview</h2><p class="subtle">按最终状态聚合，便于先判断本轮执行质量。</p></div>',
+        _status_bar(pass_count, fail_count, blocked_count, other_count),
+        "</section>",
+        '<section id="defects" class="panel">',
+        '<div class="section-head"><div><h2>非 PASS 用例</h2><p class="subtle">优先查看失败截图、失败步骤和模型/动作输出原因。</p></div>',
+        f'<span class="count-pill">{len(non_pass_cases)} items</span></div>',
+    ]
+
+    if non_pass_cases:
+        lines.append('<div class="defect-list">')
+        for case in non_pass_cases:
+            lines.append(_render_issue_case_html(case))
+        lines.append("</div>")
+    else:
+        lines.append('<div class="empty-state"><strong>暂无失败或阻塞用例</strong><span>本轮所有用例均为 PASS。</span></div>')
+    lines.append("</section>")
+
+    lines.extend(
+        [
+            '<section id="cases" class="panel">',
+            '<div class="section-head"><div><h2>全部用例</h2><p class="subtle">点击详情查看完整步骤、截图和动作记录。</p></div></div>',
+            '<div class="case-list">',
+        ]
+    )
+    for case in cases:
+        report_link = f"{case.case_id}/report.html"
+        issue_step = _find_issue_step(case)
+        reason = _issue_reason(case, issue_step) if case.status != "PASS" else case.result_message or "Passed"
+        lines.append(
+            '<a class="case-row" href="' + _h(report_link) + '">'
+            f'<span class="status-dot {case.status.lower()}"></span>'
+            f'<span class="case-name"><strong>{_h(case.case_id)}</strong><em>{_h(_display_title(case))}</em></span>'
+            f'<span class="case-steps">{len(case.steps)} steps</span>'
+            f'<span class="case-reason">{_h(_shorten(reason, 110))}</span>'
+            f'<span class="status {case.status.lower()}">{_h(case.status)}</span>'
+            "</a>"
+        )
+    lines.extend(["</div>", "</section>"])
+
+    lines.extend(
+        [
+            '<section id="environment" class="panel">',
+            '<div class="section-head"><div><h2>环境信息</h2><p class="subtle">来自执行时采集的设备、模型和应用信息。</p></div></div>',
+            '<dl class="env-list">',
+        ]
+    )
+    for key, value in environment.items():
+        if key == "apps":
+            continue
+        lines.append(f"<dt>{_h(str(key))}</dt><dd>{_h(str(value))}</dd>")
+    lines.extend(["</dl>", "</section>", "</section>", "</main>", "</body>", "</html>"])
+    return "\n".join(lines) + "\n"
+
+
+def _summary_tile(label: str, value: str, note: str, tone: str) -> str:
+    return (
+        f'<article class="summary-tile tile-{tone}">'
+        f"<span>{_h(label)}</span>"
+        f"<strong>{_h(value)}</strong>"
+        f"<em>{_h(note)}</em>"
+        "</article>"
+    )
+
+
+def _status_bar(pass_count: int, fail_count: int, blocked_count: int, other_count: int) -> str:
+    total = pass_count + fail_count + blocked_count + other_count
+    parts = [
+        ("pass", pass_count, "PASS"),
+        ("fail", fail_count, "FAIL"),
+        ("blocked", blocked_count, "BLOCKED"),
+        ("other", other_count, "OTHER"),
+    ]
+    segments = []
+    legend = []
+    for tone, count, label in parts:
+        width = (count / total * 100) if total else 0
+        if count:
+            segments.append(f'<span class="bar-{tone}" style="width:{width:.2f}%"></span>')
+        legend.append(f'<span><i class="legend-{tone}"></i>{label} {count}</span>')
+    return (
+        '<div class="status-overview">'
+        f'<div class="stacked-bar">{"".join(segments) or "<span></span>"}</div>'
+        f'<div class="bar-legend">{"".join(legend)}</div>'
         "</div>"
     )
 
@@ -606,20 +679,31 @@ def _render_issue_case_html(case: CaseReport) -> str:
         else '<div class="empty-shot">无截图</div>'
     )
     step_label = f"Step {issue_step.step:03d}" if issue_step else "无步骤"
-    action = json.dumps(issue_step.action if issue_step else {}, ensure_ascii=False, indent=2)
+    action = issue_step.action if issue_step else {}
+    action_name = action.get("action") or action.get("_metadata") or "unknown"
     return "\n".join(
         [
-            '<article class="issue-card">',
-            '<div class="issue-head">',
-            f"<h3>{_h(case.case_id)}</h3>",
-            f'<span class="status {case.status.lower()}">{_h(case.status)}</span>',
+            '<article class="defect-card">',
+            '<div class="defect-shot">',
+            screenshot_html,
             "</div>",
-            f"<p>{_h(case.title)}</p>",
-            f"<p><strong>出错步骤：</strong>{_h(step_label)}</p>",
-            f"<p><strong>出错原因：</strong>{_h(reason)}</p>",
-            f"<pre>{_h(action)}</pre>",
-            f'<div class="issue-shot">{screenshot_html}</div>',
-            f'<p><a href="{_h(case.case_id)}/report.html">查看完整步骤</a></p>',
+            '<div class="defect-body">',
+            '<div class="defect-top">',
+            f'<span class="status {case.status.lower()}">{_h(case.status)}</span>',
+            f'<span class="step-chip">{_h(step_label)}</span>',
+            "</div>",
+            f"<h3>{_h(case.case_id)}</h3>",
+            f'<p class="defect-title">{_h(_display_title(case))}</p>',
+            '<div class="reason-box">',
+            "<span>出错原因</span>",
+            f"<strong>{_h(_shorten(reason, 220))}</strong>",
+            "</div>",
+            '<div class="action-strip">',
+            f"<span>Action</span><code>{_h(action_name)}</code>",
+            f"<span>Activity</span><code>{_h((issue_step.current_activity if issue_step else '') or 'unknown')}</code>",
+            "</div>",
+            f'<a class="detail-link" href="{_h(case.case_id)}/report.html">查看完整步骤</a>',
+            "</div>",
             "</article>",
         ]
     )
@@ -645,51 +729,235 @@ def _issue_reason(case: CaseReport, step: StepArtifact | None) -> str:
     return case.result_message or ""
 
 
+def _display_title(case: CaseReport) -> str:
+    match = re.search(r"^##\s+TC-WEARFIT-\S+\s+(.+)$", case.task, re.MULTILINE)
+    if match:
+        return match.group(1).strip()
+    title = str(case.title or "").strip()
+    if title.startswith("## "):
+        return title[3:].strip()
+    return title
+
+
+def _shorten(value: str, max_len: int) -> str:
+    value = " ".join(str(value).split())
+    if len(value) <= max_len:
+        return value
+    return value[: max_len - 1].rstrip() + "…"
+
+
+def _run_duration(cases: list[CaseReport]) -> str:
+    starts = [case.started_at for case in cases if case.started_at]
+    ends = [case.finished_at for case in cases if case.finished_at]
+    if not starts or not ends:
+        return "-"
+    try:
+        start = datetime.fromisoformat(min(starts))
+        end = datetime.fromisoformat(max(ends))
+        seconds = max(0, int((end - start).total_seconds()))
+    except ValueError:
+        return "-"
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {sec}s"
+    return f"{sec}s"
+
+
 def _report_css() -> str:
     return """
 :root {
   color-scheme: light;
-  --bg: #f6f7f9;
+  --bg: #f4f6fb;
   --panel: #ffffff;
-  --text: #17202a;
-  --muted: #667085;
-  --line: #d8dde5;
-  --pass: #1f8f4d;
-  --fail: #c93535;
-  --blocked: #a15c00;
-  --other: #475467;
-  --link: #1457b8;
+  --panel-2: #f8fafc;
+  --text: #111827;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --pass: #16a34a;
+  --fail: #dc2626;
+  --blocked: #d97706;
+  --other: #64748b;
+  --link: #2563eb;
+  --shadow: 0 18px 45px rgba(15, 23, 42, .08);
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font: 14px/1.5 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
+.shell {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+  min-height: 100vh;
+}
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  padding: 24px 18px;
+  color: #dbeafe;
+  background: linear-gradient(180deg, #0f172a 0%, #111827 55%, #1e1b4b 100%);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 30px;
+}
+.brand-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #60a5fa, #22c55e);
+  box-shadow: 0 10px 30px rgba(96, 165, 250, .35);
+}
+.brand strong { display: block; font-size: 17px; color: #fff; }
+.brand small { display: block; color: #93c5fd; }
+.side-nav {
+  display: grid;
+  gap: 8px;
+}
+.side-nav a {
+  color: #cbd5e1;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.side-nav a:hover {
+  color: #fff;
+  background: rgba(255,255,255,.08);
+  text-decoration: none;
+}
+.side-foot {
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: 22px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+.content { padding: 28px 32px 42px; min-width: 0; }
 .page { max-width: 1280px; margin: 0 auto; padding: 24px; }
+.topbar,
 .hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+h1, h2, h3 { margin: 0; line-height: 1.25; }
+h1 { font-size: 30px; letter-spacing: 0; }
+h2 { font-size: 18px; }
+h3 { font-size: 15px; }
+p { margin: 8px 0; }
+.hero p, .muted, .subtle, .case-table span { color: var(--muted); }
+.subtle { margin: 6px 0 0; }
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  margin-top: 16px;
+  padding: 18px;
+  box-shadow: var(--shadow);
+}
+.section-head {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
-  padding: 20px 0 18px;
-  border-bottom: 1px solid var(--line);
+  margin-bottom: 16px;
 }
-h1, h2, h3 { margin: 0; line-height: 1.25; }
-h1 { font-size: 28px; }
-h2 { font-size: 18px; margin-bottom: 14px; }
-h3 { font-size: 15px; }
-p { margin: 8px 0; }
-.hero p, .muted, .case-table span { color: var(--muted); }
-.panel {
+.count-pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  padding: 5px 10px;
+  background: var(--panel-2);
+}
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.summary-tile {
+  min-height: 118px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  margin-top: 16px;
+  border-radius: 16px;
   padding: 16px;
+  box-shadow: var(--shadow);
+}
+.summary-tile span,
+.summary-tile em {
+  display: block;
+  color: var(--muted);
+  font-style: normal;
+}
+.summary-tile strong {
+  display: block;
+  margin: 10px 0 8px;
+  font-size: 30px;
+  line-height: 1;
+}
+.tile-pass strong { color: var(--pass); }
+.tile-fail strong { color: var(--fail); }
+.tile-blocked strong { color: var(--blocked); }
+.tile-other strong { color: var(--other); }
+.pass-ring {
+  width: 112px;
+  height: 112px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  background:
+    radial-gradient(circle closest-side, #fff 72%, transparent 73%),
+    conic-gradient(var(--pass) calc(var(--value) * 1%), #e5e7eb 0);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+.pass-ring strong { display: block; font-size: 24px; }
+.pass-ring span { display: block; color: var(--muted); font-size: 10px; font-weight: 700; }
+.split-panel {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 20px;
+  align-items: center;
+}
+.status-overview { display: grid; gap: 10px; }
+.stacked-bar {
+  display: flex;
+  height: 18px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5e7eb;
+}
+.stacked-bar span { display: block; }
+.bar-pass, .legend-pass { background: var(--pass); }
+.bar-fail, .legend-fail { background: var(--fail); }
+.bar-blocked, .legend-blocked { background: var(--blocked); }
+.bar-other, .legend-other { background: var(--other); }
+.bar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.bar-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  margin-right: 6px;
 }
 .meta-grid {
   display: grid;
@@ -700,7 +968,7 @@ p { margin: 8px 0; }
 .metric {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   padding: 14px;
 }
 .metric span { display: block; color: var(--muted); margin-bottom: 6px; }
@@ -714,7 +982,7 @@ p { margin: 8px 0; }
   min-width: 74px;
   text-align: center;
   border-radius: 999px;
-  padding: 3px 10px;
+  padding: 4px 10px;
   color: #fff;
   font-weight: 700;
   font-size: 12px;
@@ -723,17 +991,41 @@ p { margin: 8px 0; }
 .status.fail { background: var(--fail); }
 .status.blocked { background: var(--blocked); }
 .status.running { background: var(--other); }
-.case-table {
-  width: 100%;
-  border-collapse: collapse;
+.case-list { display: grid; gap: 8px; }
+.case-row {
+  display: grid;
+  grid-template-columns: 12px minmax(260px, 1.2fr) 90px minmax(180px, 1fr) 92px;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--text);
 }
-.case-table th, .case-table td {
-  text-align: left;
-  border-bottom: 1px solid var(--line);
-  padding: 10px 8px;
-  vertical-align: top;
+.case-row:hover {
+  border-color: #93c5fd;
+  box-shadow: 0 10px 26px rgba(37, 99, 235, .08);
+  text-decoration: none;
 }
-.case-table th { color: var(--muted); font-weight: 600; }
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+}
+.status-dot.pass { background: var(--pass); }
+.status-dot.fail { background: var(--fail); }
+.status-dot.blocked { background: var(--blocked); }
+.status-dot.running { background: var(--other); }
+.case-name strong,
+.case-name em {
+  display: block;
+  font-style: normal;
+}
+.case-name em,
+.case-steps,
+.case-reason { color: var(--muted); }
+.case-reason { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .env-list, .step-meta {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr);
@@ -744,29 +1036,88 @@ dd { margin: 0; overflow-wrap: anywhere; }
 pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  background: #f1f3f5;
+  background: var(--panel-2);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 10px;
   margin: 10px 0 0;
   max-height: 280px;
   overflow: auto;
 }
-.issue-grid {
+.defect-list { display: grid; gap: 14px; }
+.defect-card {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 12px;
-}
-.issue-card, .step-card {
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 16px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fff 0%, #fbfcff 100%);
   padding: 12px;
 }
-.issue-head {
+.defect-shot img,
+.defect-shot .empty-shot {
+  width: 100%;
+  height: 240px;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #eef2f7;
+}
+.defect-body { min-width: 0; }
+.defect-top {
   display: flex;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.step-chip {
+  color: #475569;
+  background: #e2e8f0;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.defect-card h3 { font-size: 17px; }
+.defect-title { color: var(--muted); margin: 4px 0 12px; }
+.reason-box {
+  border-left: 4px solid var(--fail);
+  background: #fef2f2;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 10px 0;
+}
+.reason-box span { display: block; color: #991b1b; font-size: 12px; font-weight: 700; }
+.reason-box strong { display: block; margin-top: 4px; font-weight: 600; }
+.action-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 12px 0;
+}
+.action-strip span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.action-strip code {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  border-radius: 7px;
+  padding: 3px 7px;
+}
+.detail-link {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 4px;
+  font-weight: 700;
+}
+.step-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  padding: 12px;
 }
 .step-card {
   display: grid;
@@ -779,7 +1130,7 @@ pre {
   max-height: 520px;
   object-fit: contain;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 10px;
   background: #eef1f4;
 }
 .empty-shot {
@@ -788,13 +1139,40 @@ pre {
   place-items: center;
   color: var(--muted);
   border: 1px dashed var(--line);
-  border-radius: 6px;
+  border-radius: 10px;
+  background: #f8fafc;
 }
+.empty-state {
+  display: grid;
+  place-items: center;
+  gap: 4px;
+  min-height: 150px;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 14px;
+  background: var(--panel-2);
+}
+.empty-state strong { color: var(--text); }
+.empty-state span { display: block; }
+.tile-duration strong { color: #2563eb; }
+.tile-total strong { color: #111827; }
 .back-link { color: var(--muted); }
 @media (max-width: 760px) {
+  .shell { grid-template-columns: 1fr; }
+  .sidebar { position: static; height: auto; }
+  .side-foot { position: static; margin-top: 28px; }
+  .content { padding: 16px; }
   .page { padding: 14px; }
-  .hero, .issue-head { flex-direction: column; }
+  .topbar, .hero, .section-head { flex-direction: column; align-items: flex-start; }
+  .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .split-panel { grid-template-columns: 1fr; }
+  .case-row { grid-template-columns: 12px 1fr; }
+  .case-steps, .case-reason, .case-row .status { grid-column: 2; }
+  .defect-card { grid-template-columns: 1fr; }
   .step-card { grid-template-columns: 1fr; }
   .env-list, .step-meta { grid-template-columns: 1fr; }
+}
+@media (max-width: 1100px) {
+  .overview-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 """
