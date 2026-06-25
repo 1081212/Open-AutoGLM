@@ -46,6 +46,7 @@ class ParsedTestCase:
     title: str | None
     rule_type: str | None
     priority: str | None
+    module: str | None
     task: str
 
 
@@ -67,7 +68,20 @@ def parse_test_case_heading(task: str) -> tuple[str | None, str | None, str | No
 
 def parse_test_case_priority(task: str) -> str | None:
     """解析测试用例基本信息中的优先级字段。"""
-    pattern = re.compile(r"^\s*-\s*优先级\s*[:：]\s*(.+?)\s*$", re.MULTILINE)
+    return parse_test_case_list_field(task, "优先级")
+
+
+def parse_test_case_module(task: str) -> str | None:
+    """解析测试用例基本信息中的关联模块字段。"""
+    return parse_test_case_list_field(task, "关联模块")
+
+
+def parse_test_case_list_field(task: str, field_name: str) -> str | None:
+    """解析 Markdown 列表字段，例如：- 优先级：P0。"""
+    pattern = re.compile(
+        rf"^\s*-\s*{re.escape(field_name)}\s*[:：]\s*(.+?)\s*$",
+        re.MULTILINE,
+    )
     match = pattern.search(task)
     return match.group(1).strip() if match else None
 
@@ -76,11 +90,13 @@ def parse_test_case(task: str) -> ParsedTestCase:
     """解析单条测试用例文本，保留完整文本作为 agent task。"""
     case_id, title, rule_type = parse_test_case_heading(task)
     priority = parse_test_case_priority(task)
+    module = parse_test_case_module(task)
     return ParsedTestCase(
         case_id=case_id,
         title=title,
         rule_type=rule_type,
         priority=priority,
+        module=module,
         task=task.strip(),
     )
 
@@ -117,6 +133,36 @@ def load_test_cases_from_file(file_path: str) -> list[ParsedTestCase]:
             "'## TC-WEARFIT-MODULE-001-normal 用例标题'."
         )
     return cases
+
+
+def filter_test_cases(
+    test_cases: list[ParsedTestCase],
+    priorities: list[str] | None = None,
+    modules: list[str] | None = None,
+) -> tuple[list[ParsedTestCase], list[str]]:
+    """按优先级和关联模块过滤用例。多个过滤条件之间是 AND 关系。"""
+    filtered = test_cases
+    messages: list[str] = []
+
+    if priorities:
+        selected_priorities = {priority.upper() for priority in priorities}
+        filtered = [
+            test_case
+            for test_case in filtered
+            if (test_case.priority or "").upper() in selected_priorities
+        ]
+        messages.append(f"priority: {', '.join(sorted(selected_priorities))}")
+
+    if modules:
+        selected_modules = {module.strip() for module in modules if module.strip()}
+        filtered = [
+            test_case
+            for test_case in filtered
+            if (test_case.module or "").strip() in selected_modules
+        ]
+        messages.append(f"module: {', '.join(sorted(selected_modules))}")
+
+    return filtered, messages
 
 
 def print_test_case_heading(task: str) -> None:
@@ -641,6 +687,15 @@ Examples:
     )
 
     parser.add_argument(
+        "--module",
+        action="append",
+        help=(
+            "Only run test cases with the given 关联模块 from --file. "
+            "Can be used multiple times, e.g. --module 登录 --module 手表."
+        ),
+    )
+
+    parser.add_argument(
         "tasks",
         nargs="*",
         type=str,
@@ -652,6 +707,8 @@ Examples:
         parser.error("--file cannot be used together with positional tasks")
     if args.priority and not args.file:
         parser.error("--priority can only be used together with --file")
+    if args.module and not args.file:
+        parser.error("--module can only be used together with --file")
     return args
 
 
@@ -969,20 +1026,19 @@ def main():
     if args.file:
         test_cases = load_test_cases_from_file(args.file)
         loaded_count = len(test_cases)
-        if args.priority:
-            selected_priorities = {priority.upper() for priority in args.priority}
-            test_cases = [
-                test_case
-                for test_case in test_cases
-                if (test_case.priority or "").upper() in selected_priorities
-            ]
-            priority_text = ", ".join(sorted(selected_priorities))
+        test_cases, filter_messages = filter_test_cases(
+            test_cases,
+            priorities=args.priority,
+            modules=args.module,
+        )
+        if filter_messages:
+            filter_text = "; ".join(filter_messages)
             print(
                 f"\nLoaded {loaded_count} test case(s) from {args.file}; "
-                f"{len(test_cases)} matched priority: {priority_text}"
+                f"{len(test_cases)} matched {filter_text}"
             )
             if not test_cases:
-                raise ValueError(f"No test cases matched priority: {priority_text}")
+                raise ValueError(f"No test cases matched filters: {filter_text}")
         else:
             print(f"\nLoaded {loaded_count} test case(s) from {args.file}")
     elif args.tasks:
@@ -996,9 +1052,10 @@ def main():
             title = f" - {test_case.title}" if test_case.title else ""
             rule_type = test_case.rule_type or "unknown"
             priority = test_case.priority or "unknown"
+            module = test_case.module or "unknown"
             print(
                 f"\nTask {index}/{total_tasks}: "
-                f"{case_label} [{rule_type}, {priority}]{title}\n"
+                f"{case_label} [{rule_type}, {priority}, {module}]{title}\n"
             )
             print_test_case_heading(task)
             reporter.start_case(task, index)

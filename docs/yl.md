@@ -24,124 +24,124 @@
 | 序号 | 用例 ID | 优先级 | 模块 | 规则类型 | 标题 |
 |------|---------|--------|------|----------|------|
 | 1 | TC-WEARFIT-LOGIN-001-normal | P0 | 登录 | normal | 手机号密码登录后进入主页 |
-| 2 | TC-WEARFIT-LOGIN-002-normal | P0 | 登录态 | normal | 已登录账号冷启动恢复主页 |
+| 2 | TC-WEARFIT-LOGIN-002-normal | P0 | 登录 | normal | 已登录账号冷启动恢复主页 |
 | 3 | TC-WEARFIT-HOME-001-normal | P0 | 首页 | normal | 首页主框架与底部导航加载 |
 | 4 | TC-WEARFIT-HOME-002-normal | P1 | 首页 | normal | 首页搜索入口打开 |
 | 5 | TC-WEARFIT-HOME-003-normal | P1 | 首页 | normal | 首页设备卡片进入设备功能页 |
 | 6 | TC-WEARFIT-HOME-004-normal | P1 | 首页 | normal | 首页健康数据卡片查看 |
 | 7 | TC-WEARFIT-HOME-005-normal | P1 | 首页 | normal | 首页 Feed 视频卡片查看 |
 | 8 | TC-WEARFIT-HOME-006-normal | P1 | 首页 | normal | 首页卡片编辑入口打开 |
-| 9 | TC-WEARFIT-WATCH-001-normal | P0 | 手表入口 | normal | 首页目标手表卡片与同步状态 |
-| 10 | TC-WEARFIT-WATCH-002-normal | P1 | 每日活动 | normal | 查看每日活动数据 |
-| 11 | TC-WEARFIT-WATCH-003-normal | P1 | 心率 | normal | 查看心率健康数据 |
-| 12 | TC-WEARFIT-WATCH-004-normal | P1 | 睡眠 | normal | 查看睡眠健康数据 |
-| 13 | TC-WEARFIT-WATCH-005-normal | P1 | 血压 | normal | 查看血压健康数据 |
-| 14 | TC-WEARFIT-WATCH-006-normal | P1 | 血氧 | normal | 查看血氧健康数据 |
-| 15 | TC-WEARFIT-WATCH-007-normal | P1 | 血糖 | normal | 查看血糖健康数据 |
-| 16 | TC-WEARFIT-WATCH-008-normal | P1 | 体重 | normal | 查看体重数据 |
-| 17 | TC-WEARFIT-WATCH-009-normal | P1 | 压力 | normal | 查看压力数据 |
-| 18 | TC-WEARFIT-WATCH-010-normal | P1 | 梅脱/有效活动量 | normal | 查看梅脱或有效活动量数据 |
-| 19 | TC-WEARFIT-WATCH-011-normal | P1 | 体温 | normal | 查看体温数据 |
-| 20 | TC-WEARFIT-WATCH-012-normal | P1 | 呼吸频率 | normal | 查看呼吸频率数据 |
-| 21 | TC-WEARFIT-WATCH-013-normal | P1 | 睡眠呼吸暂停 | normal | 查看睡眠呼吸暂停数据 |
-| 22 | TC-WEARFIT-WATCH-014-normal | P1 | 健康报告 | normal | 打开健康报告 |
-| 23 | TC-WEARFIT-WATCH-015-normal | P1 | 健康预警 | normal | 打开健康预警服务 |
-| 24 | TC-WEARFIT-WATCH-016-normal | P1 | 健康看板 | normal | 打开场景健康看板或健康管理列表 |
-| 25 | TC-WEARFIT-WATCH-017-normal | P1 | 表盘市场 | normal | 查看表盘市场列表 |
-| 26 | TC-WEARFIT-WATCH-018-normal | P1 | 表盘详情 | normal | 查看表盘详情 |
-| 27 | TC-WEARFIT-WATCH-019-normal | P1 | 自定义表盘 | normal | 打开自定义表盘 |
-| 28 | TC-WEARFIT-WATCH-020-normal | P1 | AI 表盘 | normal | 打开 AI 精美表盘 |
-| 29 | TC-WEARFIT-WATCH-021-normal | P1 | AI 表盘相册 | normal | 打开 AI 表盘相册 |
-| 30 | TC-WEARFIT-WATCH-022-normal | P1 | 我的表盘 | normal | 查看已购买或已下载表盘 |
-| 31 | TC-WEARFIT-WATCH-023-normal | P1 | 消息通知 | normal | 打开消息通知设置 |
-| 32 | TC-WEARFIT-WATCH-024-normal | P1 | 常用联系人 | normal | 打开常用联系人 |
-| 33 | TC-WEARFIT-WATCH-025-normal | P1 | 天气推送 | normal | 打开天气推送 |
-| 34 | TC-WEARFIT-WATCH-026-normal | P1 | 喝水提醒 | normal | 打开喝水提醒 |
-| 35 | TC-WEARFIT-WATCH-027-normal | P1 | 心率提醒 | normal | 打开心率提醒 |
-| 36 | TC-WEARFIT-WATCH-028-normal | P1 | 远眺提醒 | normal | 打开远眺提醒 |
-| 37 | TC-WEARFIT-WATCH-029-normal | P1 | 运动提醒 | normal | 打开运动提醒 |
-| 38 | TC-WEARFIT-WATCH-030-normal | P1 | 吃药提醒 | normal | 打开吃药提醒 |
-| 39 | TC-WEARFIT-WATCH-031-normal | P1 | 看书提醒 | normal | 打开看书提醒 |
-| 40 | TC-WEARFIT-WATCH-032-normal | P1 | 久坐提醒 | normal | 打开久坐提醒 |
-| 41 | TC-WEARFIT-WATCH-033-normal | P1 | 出行提醒 | normal | 打开出行提醒 |
-| 42 | TC-WEARFIT-WATCH-034-normal | P1 | 闹钟 | normal | 打开闹钟列表 |
-| 43 | TC-WEARFIT-WATCH-035-normal | P1 | 日程管理 | normal | 打开日程管理 |
-| 44 | TC-WEARFIT-WATCH-036-normal | P1 | 钱包 | normal | 打开钱包二维码 |
-| 45 | TC-WEARFIT-WATCH-037-normal | P1 | 名片 | normal | 打开名片二维码 |
-| 46 | TC-WEARFIT-WATCH-038-normal | P1 | NFC 卡包 | normal | 打开 NFC 卡包 |
-| 47 | TC-WEARFIT-WATCH-039-normal | P1 | 核酸码 | normal | 打开核酸码 |
-| 48 | TC-WEARFIT-WATCH-040-normal | P1 | 我的二维码 | normal | 打开我的二维码 |
-| 49 | TC-WEARFIT-WATCH-041-normal | P1 | 应用市场 | normal | 打开应用市场 |
-| 50 | TC-WEARFIT-WATCH-042-normal | P1 | 本地音乐 | normal | 打开本地音乐 |
-| 51 | TC-WEARFIT-WATCH-043-normal | P1 | 电子书 | normal | 打开电子书 |
-| 52 | TC-WEARFIT-WATCH-044-normal | P1 | 本地相册 | normal | 打开设备本地相册 |
-| 53 | TC-WEARFIT-WATCH-045-normal | P1 | 语音备忘录 | normal | 打开语音备忘录 |
-| 54 | TC-WEARFIT-WATCH-046-normal | P1 | 喜马拉雅/听书 | normal | 打开喜马拉雅或听书 |
-| 55 | TC-WEARFIT-WATCH-047-normal | P1 | AI 音乐 | normal | 打开 AI 音乐 |
-| 56 | TC-WEARFIT-WATCH-048-normal | P1 | 微信电话 | normal | 打开微信电话 |
-| 57 | TC-WEARFIT-WATCH-049-normal | P1 | 微信回复 | normal | 打开微信回复 |
-| 58 | TC-WEARFIT-WATCH-050-normal | P1 | 微信回复扫码 | normal | 打开微信回复扫码 |
-| 59 | TC-WEARFIT-WATCH-051-normal | P1 | 微信图片回复 | normal | 打开微信图片回复 |
-| 60 | TC-WEARFIT-WATCH-052-audio | P1 | 一键翻译 | audio | 执行手表一键翻译 |
-| 61 | TC-WEARFIT-WATCH-053-audio | P1 | Wearfit 翻译 | audio | 执行 Wearfit 翻译 |
-| 62 | TC-WEARFIT-WATCH-054-audio | P1 | 面对面翻译 | audio | 执行面对面翻译 |
-| 63 | TC-WEARFIT-WATCH-055-audio | P1 | 同声传译 | audio | 执行同声传译 |
-| 64 | TC-WEARFIT-WATCH-056-normal | P1 | 摇摇拍照 | normal | 打开摇摇拍照 |
-| 65 | TC-WEARFIT-WATCH-057-normal | P1 | 查找手表 | normal | 执行查找手表 |
-| 66 | TC-WEARFIT-WATCH-058-normal | P1 | 查找手机 | normal | 打开查找手机 |
-| 67 | TC-WEARFIT-WATCH-059-normal | P1 | 弹幕 | normal | 打开弹幕功能 |
-| 68 | TC-WEARFIT-WATCH-060-normal | P1 | 导航 | normal | 打开百度/小度导航 |
-| 69 | TC-WEARFIT-WATCH-061-normal | P1 | Qibla | normal | 打开朝拜方向 |
-| 70 | TC-WEARFIT-WATCH-062-normal | P1 | Wearfit GPT | normal | 打开 Wearfit GPT |
-| 71 | TC-WEARFIT-WATCH-063-normal | P1 | 固件升级 | normal | 查看固件升级状态 |
-| 72 | TC-WEARFIT-WATCH-064-normal | P1 | 设备信息 | normal | 查看设备信息 |
-| 73 | TC-WEARFIT-WATCH-065-normal | P1 | 其他设置 | normal | 打开其他设置 |
-| 74 | TC-WEARFIT-WATCH-066-normal | P1 | 网络共享 | normal | 打开网络共享 |
-| 75 | TC-WEARFIT-WATCH-067-normal | P1 | 功能管理 | normal | 打开常用功能管理 |
-| 76 | TC-WEARFIT-WATCH-068-normal | P1 | 未连接拦截 | normal | 验证未连接功能提示 |
-| 77 | TC-WEARFIT-GLASSES-001-normal | P2 | 眼镜入口 | normal | 首页目标眼镜卡片与连接状态 |
-| 78 | TC-WEARFIT-GLASSES-002-normal | P2 | 眼镜 AI | normal | 打开眼镜 AI 对话 |
-| 79 | TC-WEARFIT-GLASSES-003-normal | P2 | 眼镜历史 | normal | 打开眼镜历史会话列表 |
-| 80 | TC-WEARFIT-GLASSES-004-normal | P2 | 眼镜功能管理 | normal | 打开眼镜功能编辑 |
-| 81 | TC-WEARFIT-GLASSES-005-normal | P2 | 眼镜音乐 | normal | 打开眼镜音乐列表 |
-| 82 | TC-WEARFIT-GLASSES-006-normal | P2 | 眼镜音乐添加 | normal | 打开眼镜音乐添加页 |
-| 83 | TC-WEARFIT-GLASSES-007-normal | P2 | 眼镜录音 | normal | 打开眼镜录音列表 |
-| 84 | TC-WEARFIT-GLASSES-008-normal | P2 | 眼镜相册 | normal | 打开眼镜相册 |
-| 85 | TC-WEARFIT-GLASSES-009-normal | P2 | 眼镜相册详情 | normal | 打开眼镜相册详情 |
-| 86 | TC-WEARFIT-GLASSES-010-normal | P2 | 眼镜路线规划 | normal | 打开眼镜路线规划 |
-| 87 | TC-WEARFIT-GLASSES-011-normal | P2 | 眼镜导航 | normal | 打开眼镜导航页 |
-| 88 | TC-WEARFIT-GLASSES-012-normal | P2 | 眼镜系统设置 | normal | 打开眼镜设置 |
-| 89 | TC-WEARFIT-GLASSES-013-normal | P2 | 眼镜 Wi-Fi | normal | 打开眼镜 Wi-Fi 列表 |
-| 90 | TC-WEARFIT-GLASSES-014-normal | P2 | 眼镜媒体设置 | normal | 打开眼镜媒体设置 |
-| 91 | TC-WEARFIT-GLASSES-015-normal | P2 | 眼镜电源设置 | normal | 打开眼镜电源设置 |
-| 92 | TC-WEARFIT-GLASSES-016-normal | P2 | 眼镜按键设置 | normal | 打开眼镜按键设置 |
-| 93 | TC-WEARFIT-GLASSES-017-normal | P2 | 眼镜触控板 | normal | 打开眼镜触控板设置 |
-| 94 | TC-WEARFIT-GLASSES-018-normal | P2 | 眼镜 PPT | normal | 打开眼镜 PPT 功能 |
-| 95 | TC-WEARFIT-GLASSES-019-normal | P2 | 眼镜写作 | normal | 打开眼镜写作功能 |
-| 96 | TC-WEARFIT-GLASSES-020-normal | P2 | 眼镜影片 | normal | 打开眼镜影片编辑首页 |
-| 97 | TC-WEARFIT-GLASSES-021-normal | P2 | 眼镜直播 | normal | 打开眼镜视频直播 |
-| 98 | TC-WEARFIT-VIDEO-001-normal | P1 | 视频首页 | normal | 视频 Tab 信息流加载与播放态 |
-| 99 | TC-WEARFIT-VIDEO-002-normal | P1 | 视频切换 | normal | 视频上下滑切换 |
-| 100 | TC-WEARFIT-VIDEO-003-normal | P1 | 视频点赞 | normal | 视频点赞按钮状态验证 |
-| 101 | TC-WEARFIT-VIDEO-004-normal | P1 | 视频评论 | normal | 打开视频评论区 |
-| 102 | TC-WEARFIT-VIDEO-005-normal | P1 | 视频收藏 | normal | 视频收藏按钮状态验证 |
-| 103 | TC-WEARFIT-VIDEO-006-normal | P1 | 视频分享 | normal | 打开视频分享面板 |
-| 104 | TC-WEARFIT-VIDEO-007-normal | P1 | 视频搜索 | normal | 视频搜索入口打开 |
-| 105 | TC-WEARFIT-VIDEO-008-normal | P1 | 视频作者 | normal | 视频作者主页打开 |
-| 106 | TC-WEARFIT-VIDEO-009-normal | P1 | 视频关注 | normal | 视频作者关注状态查看 |
-| 107 | TC-WEARFIT-VIDEO-010-normal | P1 | 视频设置 | normal | 视频设置页打开 |
-| 108 | TC-WEARFIT-VIDEO-011-normal | P1 | 视频举报 | normal | 打开视频举报页 |
-| 109 | TC-WEARFIT-VIDEO-012-normal | P1 | 视频发布入口 | normal | 打开视频发布入口 |
-| 110 | TC-WEARFIT-MINE-001-normal | P1 | 我的首页 | normal | 我的页账号信息加载 |
-| 111 | TC-WEARFIT-MINE-002-normal | P1 | 我的设置 | normal | 设置页打开 |
-| 112 | TC-WEARFIT-MINE-003-normal | P1 | 关于 | normal | 关于页打开 |
-| 113 | TC-WEARFIT-MINE-004-normal | P1 | 隐私协议 | normal | 隐私政策页打开 |
-| 114 | TC-WEARFIT-MINE-005-normal | P1 | 单位设置 | normal | 单位设置页打开 |
-| 115 | TC-WEARFIT-MINE-006-normal | P1 | 帮助反馈 | normal | 帮助与反馈页打开 |
-| 116 | TC-WEARFIT-MINE-007-normal | P1 | 账号安全 | normal | 账号与安全页打开 |
-| 117 | TC-WEARFIT-MINE-008-normal | P1 | 绑定手机 | normal | 绑定手机号入口打开 |
-| 118 | TC-WEARFIT-MINE-009-normal | P1 | 修改密码 | normal | 修改密码入口打开 |
-| 119 | TC-WEARFIT-MINE-010-normal | P1 | 退出登录 | normal | 退出登录二次确认 |
+| 9 | TC-WEARFIT-WATCH-001-normal | P0 | 手表 | normal | 首页目标手表卡片与同步状态 |
+| 10 | TC-WEARFIT-WATCH-002-normal | P1 | 手表 | normal | 查看每日活动数据 |
+| 11 | TC-WEARFIT-WATCH-003-normal | P1 | 手表 | normal | 查看心率健康数据 |
+| 12 | TC-WEARFIT-WATCH-004-normal | P1 | 手表 | normal | 查看睡眠健康数据 |
+| 13 | TC-WEARFIT-WATCH-005-normal | P1 | 手表 | normal | 查看血压健康数据 |
+| 14 | TC-WEARFIT-WATCH-006-normal | P1 | 手表 | normal | 查看血氧健康数据 |
+| 15 | TC-WEARFIT-WATCH-007-normal | P1 | 手表 | normal | 查看血糖健康数据 |
+| 16 | TC-WEARFIT-WATCH-008-normal | P1 | 手表 | normal | 查看体重数据 |
+| 17 | TC-WEARFIT-WATCH-009-normal | P1 | 手表 | normal | 查看压力数据 |
+| 18 | TC-WEARFIT-WATCH-010-normal | P1 | 手表 | normal | 查看梅脱或有效活动量数据 |
+| 19 | TC-WEARFIT-WATCH-011-normal | P1 | 手表 | normal | 查看体温数据 |
+| 20 | TC-WEARFIT-WATCH-012-normal | P1 | 手表 | normal | 查看呼吸频率数据 |
+| 21 | TC-WEARFIT-WATCH-013-normal | P1 | 手表 | normal | 查看睡眠呼吸暂停数据 |
+| 22 | TC-WEARFIT-WATCH-014-normal | P1 | 手表 | normal | 打开健康报告 |
+| 23 | TC-WEARFIT-WATCH-015-normal | P1 | 手表 | normal | 打开健康预警服务 |
+| 24 | TC-WEARFIT-WATCH-016-normal | P1 | 手表 | normal | 打开场景健康看板或健康管理列表 |
+| 25 | TC-WEARFIT-WATCH-017-normal | P1 | 手表 | normal | 查看表盘市场列表 |
+| 26 | TC-WEARFIT-WATCH-018-normal | P1 | 手表 | normal | 查看表盘详情 |
+| 27 | TC-WEARFIT-WATCH-019-normal | P1 | 手表 | normal | 打开自定义表盘 |
+| 28 | TC-WEARFIT-WATCH-020-normal | P1 | 手表 | normal | 打开 AI 精美表盘 |
+| 29 | TC-WEARFIT-WATCH-021-normal | P1 | 手表 | normal | 打开 AI 表盘相册 |
+| 30 | TC-WEARFIT-WATCH-022-normal | P1 | 手表 | normal | 查看已购买或已下载表盘 |
+| 31 | TC-WEARFIT-WATCH-023-normal | P1 | 手表 | normal | 打开消息通知设置 |
+| 32 | TC-WEARFIT-WATCH-024-normal | P1 | 手表 | normal | 打开常用联系人 |
+| 33 | TC-WEARFIT-WATCH-025-normal | P1 | 手表 | normal | 打开天气推送 |
+| 34 | TC-WEARFIT-WATCH-026-normal | P1 | 手表 | normal | 打开喝水提醒 |
+| 35 | TC-WEARFIT-WATCH-027-normal | P1 | 手表 | normal | 打开心率提醒 |
+| 36 | TC-WEARFIT-WATCH-028-normal | P1 | 手表 | normal | 打开远眺提醒 |
+| 37 | TC-WEARFIT-WATCH-029-normal | P1 | 手表 | normal | 打开运动提醒 |
+| 38 | TC-WEARFIT-WATCH-030-normal | P1 | 手表 | normal | 打开吃药提醒 |
+| 39 | TC-WEARFIT-WATCH-031-normal | P1 | 手表 | normal | 打开看书提醒 |
+| 40 | TC-WEARFIT-WATCH-032-normal | P1 | 手表 | normal | 打开久坐提醒 |
+| 41 | TC-WEARFIT-WATCH-033-normal | P1 | 手表 | normal | 打开出行提醒 |
+| 42 | TC-WEARFIT-WATCH-034-normal | P1 | 手表 | normal | 打开闹钟列表 |
+| 43 | TC-WEARFIT-WATCH-035-normal | P1 | 手表 | normal | 打开日程管理 |
+| 44 | TC-WEARFIT-WATCH-036-normal | P1 | 手表 | normal | 打开钱包二维码 |
+| 45 | TC-WEARFIT-WATCH-037-normal | P1 | 手表 | normal | 打开名片二维码 |
+| 46 | TC-WEARFIT-WATCH-038-normal | P1 | 手表 | normal | 打开 NFC 卡包 |
+| 47 | TC-WEARFIT-WATCH-039-normal | P1 | 手表 | normal | 打开核酸码 |
+| 48 | TC-WEARFIT-WATCH-040-normal | P1 | 手表 | normal | 打开我的二维码 |
+| 49 | TC-WEARFIT-WATCH-041-normal | P1 | 手表 | normal | 打开应用市场 |
+| 50 | TC-WEARFIT-WATCH-042-normal | P1 | 手表 | normal | 打开本地音乐 |
+| 51 | TC-WEARFIT-WATCH-043-normal | P1 | 手表 | normal | 打开电子书 |
+| 52 | TC-WEARFIT-WATCH-044-normal | P1 | 手表 | normal | 打开设备本地相册 |
+| 53 | TC-WEARFIT-WATCH-045-normal | P1 | 手表 | normal | 打开语音备忘录 |
+| 54 | TC-WEARFIT-WATCH-046-normal | P1 | 手表 | normal | 打开喜马拉雅或听书 |
+| 55 | TC-WEARFIT-WATCH-047-normal | P1 | 手表 | normal | 打开 AI 音乐 |
+| 56 | TC-WEARFIT-WATCH-048-normal | P1 | 手表 | normal | 打开微信电话 |
+| 57 | TC-WEARFIT-WATCH-049-normal | P1 | 手表 | normal | 打开微信回复 |
+| 58 | TC-WEARFIT-WATCH-050-normal | P1 | 手表 | normal | 打开微信回复扫码 |
+| 59 | TC-WEARFIT-WATCH-051-normal | P1 | 手表 | normal | 打开微信图片回复 |
+| 60 | TC-WEARFIT-WATCH-052-audio | P1 | 手表 | audio | 执行手表一键翻译 |
+| 61 | TC-WEARFIT-WATCH-053-audio | P1 | 手表 | audio | 执行 Wearfit 翻译 |
+| 62 | TC-WEARFIT-WATCH-054-audio | P1 | 手表 | audio | 执行面对面翻译 |
+| 63 | TC-WEARFIT-WATCH-055-audio | P1 | 手表 | audio | 执行同声传译 |
+| 64 | TC-WEARFIT-WATCH-056-normal | P1 | 手表 | normal | 打开摇摇拍照 |
+| 65 | TC-WEARFIT-WATCH-057-normal | P1 | 手表 | normal | 执行查找手表 |
+| 66 | TC-WEARFIT-WATCH-058-normal | P1 | 手表 | normal | 打开查找手机 |
+| 67 | TC-WEARFIT-WATCH-059-normal | P1 | 手表 | normal | 打开弹幕功能 |
+| 68 | TC-WEARFIT-WATCH-060-normal | P1 | 手表 | normal | 打开百度/小度导航 |
+| 69 | TC-WEARFIT-WATCH-061-normal | P1 | 手表 | normal | 打开朝拜方向 |
+| 70 | TC-WEARFIT-WATCH-062-normal | P1 | 手表 | normal | 打开 Wearfit GPT |
+| 71 | TC-WEARFIT-WATCH-063-normal | P1 | 手表 | normal | 查看固件升级状态 |
+| 72 | TC-WEARFIT-WATCH-064-normal | P1 | 手表 | normal | 查看设备信息 |
+| 73 | TC-WEARFIT-WATCH-065-normal | P1 | 手表 | normal | 打开其他设置 |
+| 74 | TC-WEARFIT-WATCH-066-normal | P1 | 手表 | normal | 打开网络共享 |
+| 75 | TC-WEARFIT-WATCH-067-normal | P1 | 手表 | normal | 打开常用功能管理 |
+| 76 | TC-WEARFIT-WATCH-068-normal | P1 | 手表 | normal | 验证未连接功能提示 |
+| 77 | TC-WEARFIT-GLASSES-001-normal | P2 | 眼镜 | normal | 首页目标眼镜卡片与连接状态 |
+| 78 | TC-WEARFIT-GLASSES-002-normal | P2 | 眼镜 | normal | 打开眼镜 AI 对话 |
+| 79 | TC-WEARFIT-GLASSES-003-normal | P2 | 眼镜 | normal | 打开眼镜历史会话列表 |
+| 80 | TC-WEARFIT-GLASSES-004-normal | P2 | 眼镜 | normal | 打开眼镜功能编辑 |
+| 81 | TC-WEARFIT-GLASSES-005-normal | P2 | 眼镜 | normal | 打开眼镜音乐列表 |
+| 82 | TC-WEARFIT-GLASSES-006-normal | P2 | 眼镜 | normal | 打开眼镜音乐添加页 |
+| 83 | TC-WEARFIT-GLASSES-007-normal | P2 | 眼镜 | normal | 打开眼镜录音列表 |
+| 84 | TC-WEARFIT-GLASSES-008-normal | P2 | 眼镜 | normal | 打开眼镜相册 |
+| 85 | TC-WEARFIT-GLASSES-009-normal | P2 | 眼镜 | normal | 打开眼镜相册详情 |
+| 86 | TC-WEARFIT-GLASSES-010-normal | P2 | 眼镜 | normal | 打开眼镜路线规划 |
+| 87 | TC-WEARFIT-GLASSES-011-normal | P2 | 眼镜 | normal | 打开眼镜导航页 |
+| 88 | TC-WEARFIT-GLASSES-012-normal | P2 | 眼镜 | normal | 打开眼镜设置 |
+| 89 | TC-WEARFIT-GLASSES-013-normal | P2 | 眼镜 | normal | 打开眼镜 Wi-Fi 列表 |
+| 90 | TC-WEARFIT-GLASSES-014-normal | P2 | 眼镜 | normal | 打开眼镜媒体设置 |
+| 91 | TC-WEARFIT-GLASSES-015-normal | P2 | 眼镜 | normal | 打开眼镜电源设置 |
+| 92 | TC-WEARFIT-GLASSES-016-normal | P2 | 眼镜 | normal | 打开眼镜按键设置 |
+| 93 | TC-WEARFIT-GLASSES-017-normal | P2 | 眼镜 | normal | 打开眼镜触控板设置 |
+| 94 | TC-WEARFIT-GLASSES-018-normal | P2 | 眼镜 | normal | 打开眼镜 PPT 功能 |
+| 95 | TC-WEARFIT-GLASSES-019-normal | P2 | 眼镜 | normal | 打开眼镜写作功能 |
+| 96 | TC-WEARFIT-GLASSES-020-normal | P2 | 眼镜 | normal | 打开眼镜影片编辑首页 |
+| 97 | TC-WEARFIT-GLASSES-021-normal | P2 | 眼镜 | normal | 打开眼镜视频直播 |
+| 98 | TC-WEARFIT-VIDEO-001-normal | P1 | 视频 | normal | 视频 Tab 信息流加载与播放态 |
+| 99 | TC-WEARFIT-VIDEO-002-normal | P1 | 视频 | normal | 视频上下滑切换 |
+| 100 | TC-WEARFIT-VIDEO-003-normal | P1 | 视频 | normal | 视频点赞按钮状态验证 |
+| 101 | TC-WEARFIT-VIDEO-004-normal | P1 | 视频 | normal | 打开视频评论区 |
+| 102 | TC-WEARFIT-VIDEO-005-normal | P1 | 视频 | normal | 视频收藏按钮状态验证 |
+| 103 | TC-WEARFIT-VIDEO-006-normal | P1 | 视频 | normal | 打开视频分享面板 |
+| 104 | TC-WEARFIT-VIDEO-007-normal | P1 | 视频 | normal | 视频搜索入口打开 |
+| 105 | TC-WEARFIT-VIDEO-008-normal | P1 | 视频 | normal | 视频作者主页打开 |
+| 106 | TC-WEARFIT-VIDEO-009-normal | P1 | 视频 | normal | 视频作者关注状态查看 |
+| 107 | TC-WEARFIT-VIDEO-010-normal | P1 | 视频 | normal | 视频设置页打开 |
+| 108 | TC-WEARFIT-VIDEO-011-normal | P1 | 视频 | normal | 打开视频举报页 |
+| 109 | TC-WEARFIT-VIDEO-012-normal | P1 | 视频 | normal | 打开视频发布入口 |
+| 110 | TC-WEARFIT-MINE-001-normal | P1 | 我的 | normal | 我的页账号信息加载 |
+| 111 | TC-WEARFIT-MINE-002-normal | P1 | 我的 | normal | 设置页打开 |
+| 112 | TC-WEARFIT-MINE-003-normal | P1 | 我的 | normal | 关于页打开 |
+| 113 | TC-WEARFIT-MINE-004-normal | P1 | 我的 | normal | 隐私政策页打开 |
+| 114 | TC-WEARFIT-MINE-005-normal | P1 | 我的 | normal | 单位设置页打开 |
+| 115 | TC-WEARFIT-MINE-006-normal | P1 | 我的 | normal | 帮助与反馈页打开 |
+| 116 | TC-WEARFIT-MINE-007-normal | P1 | 我的 | normal | 账号与安全页打开 |
+| 117 | TC-WEARFIT-MINE-008-normal | P1 | 我的 | normal | 绑定手机号入口打开 |
+| 118 | TC-WEARFIT-MINE-009-normal | P1 | 我的 | normal | 修改密码入口打开 |
+| 119 | TC-WEARFIT-MINE-010-normal | P1 | 我的 | normal | 退出登录二次确认 |
 
 ## 通用前置条件
 
@@ -242,7 +242,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：登录态
+- 关联模块：登录
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -665,7 +665,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：手表入口
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -725,7 +725,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：每日活动
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -788,7 +788,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：心率
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -851,7 +851,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：睡眠
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -914,7 +914,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：血压
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -977,7 +977,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：血氧
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1040,7 +1040,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：血糖
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1103,7 +1103,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：体重
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1166,7 +1166,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：压力
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1229,7 +1229,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：梅脱/有效活动量
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1292,7 +1292,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：体温
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1355,7 +1355,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：呼吸频率
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1418,7 +1418,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：睡眠呼吸暂停
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1481,7 +1481,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：健康报告
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1544,7 +1544,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：健康预警
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1607,7 +1607,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：健康看板
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1670,7 +1670,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：表盘市场
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1733,7 +1733,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：表盘详情
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1796,7 +1796,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：自定义表盘
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1859,7 +1859,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：AI 表盘
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1922,7 +1922,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：AI 表盘相册
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -1985,7 +1985,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：我的表盘
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2048,7 +2048,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：消息通知
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2111,7 +2111,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：常用联系人
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2174,7 +2174,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：天气推送
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2237,7 +2237,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：喝水提醒
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2300,7 +2300,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：心率提醒
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2363,7 +2363,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：远眺提醒
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2426,7 +2426,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：运动提醒
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2489,7 +2489,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：吃药提醒
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2552,7 +2552,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：看书提醒
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2615,7 +2615,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：久坐提醒
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2678,7 +2678,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：出行提醒
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2741,7 +2741,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：闹钟
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2804,7 +2804,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：日程管理
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2867,7 +2867,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：钱包
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2930,7 +2930,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：名片
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -2993,7 +2993,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：NFC 卡包
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -3056,7 +3056,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：核酸码
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -3119,7 +3119,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：我的二维码
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -3182,7 +3182,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：应用市场
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -3245,7 +3245,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：本地音乐
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -3308,7 +3308,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：电子书
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -3371,7 +3371,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：本地相册
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -3434,7 +3434,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：语音备忘录
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -3497,7 +3497,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：喜马拉雅/听书
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -3560,7 +3560,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：AI 音乐
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -3623,7 +3623,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：微信电话
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -3686,7 +3686,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：微信回复
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -3749,7 +3749,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：微信回复扫码
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -3812,7 +3812,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：微信图片回复
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -3875,7 +3875,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：一键翻译
+- 关联模块：手表
 - 规则类型：audio
 - 最大步骤数：30
 - 超时时间：150 秒
@@ -3941,7 +3941,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：Wearfit 翻译
+- 关联模块：手表
 - 规则类型：audio
 - 最大步骤数：30
 - 超时时间：150 秒
@@ -4007,7 +4007,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：面对面翻译
+- 关联模块：手表
 - 规则类型：audio
 - 最大步骤数：30
 - 超时时间：150 秒
@@ -4073,7 +4073,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：同声传译
+- 关联模块：手表
 - 规则类型：audio
 - 最大步骤数：30
 - 超时时间：150 秒
@@ -4139,7 +4139,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：摇摇拍照
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -4202,7 +4202,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：查找手表
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -4262,7 +4262,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：查找手机
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -4325,7 +4325,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：弹幕
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -4388,7 +4388,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：导航
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -4451,7 +4451,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：Qibla
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -4514,7 +4514,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：Wearfit GPT
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -4577,7 +4577,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：固件升级
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -4640,7 +4640,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：设备信息
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -4703,7 +4703,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：其他设置
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -4766,7 +4766,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：网络共享
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -4829,7 +4829,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：功能管理
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -4892,7 +4892,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：未连接拦截
+- 关联模块：手表
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -4952,7 +4952,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜入口
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -5012,7 +5012,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜 AI
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5075,7 +5075,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜历史
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5138,7 +5138,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜功能管理
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5201,7 +5201,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜音乐
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5264,7 +5264,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜音乐添加
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5327,7 +5327,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜录音
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5390,7 +5390,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜相册
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5453,7 +5453,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜相册详情
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5516,7 +5516,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜路线规划
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5579,7 +5579,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜导航
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5642,7 +5642,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜系统设置
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5705,7 +5705,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜 Wi-Fi
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5768,7 +5768,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜媒体设置
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5831,7 +5831,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜电源设置
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5894,7 +5894,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜按键设置
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -5957,7 +5957,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜触控板
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -6020,7 +6020,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜 PPT
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -6083,7 +6083,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜写作
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -6146,7 +6146,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜影片
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -6209,7 +6209,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：眼镜直播
+- 关联模块：眼镜
 - 规则类型：normal
 - 最大步骤数：25
 - 超时时间：150 秒
@@ -6272,7 +6272,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：视频首页
+- 关联模块：视频
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -6332,7 +6332,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：视频切换
+- 关联模块：视频
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -6392,7 +6392,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：视频点赞
+- 关联模块：视频
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -6452,7 +6452,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：视频评论
+- 关联模块：视频
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -6512,7 +6512,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：视频收藏
+- 关联模块：视频
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -6572,7 +6572,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：视频分享
+- 关联模块：视频
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -6632,7 +6632,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：视频搜索
+- 关联模块：视频
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -6692,7 +6692,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：视频作者
+- 关联模块：视频
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -6752,7 +6752,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：视频关注
+- 关联模块：视频
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -6812,7 +6812,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：视频设置
+- 关联模块：视频
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -6872,7 +6872,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：视频举报
+- 关联模块：视频
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -6932,7 +6932,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：视频发布入口
+- 关联模块：视频
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -6992,7 +6992,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：我的首页
+- 关联模块：我的
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -7052,7 +7052,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：我的设置
+- 关联模块：我的
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -7112,7 +7112,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：关于
+- 关联模块：我的
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -7172,7 +7172,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：隐私协议
+- 关联模块：我的
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -7232,7 +7232,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：单位设置
+- 关联模块：我的
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -7292,7 +7292,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：帮助反馈
+- 关联模块：我的
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -7352,7 +7352,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：账号安全
+- 关联模块：我的
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -7412,7 +7412,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：绑定手机
+- 关联模块：我的
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -7472,7 +7472,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：修改密码
+- 关联模块：我的
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
@@ -7532,7 +7532,7 @@
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
-- 关联模块：退出登录
+- 关联模块：我的
 - 规则类型：normal
 - 最大步骤数：20
 - 超时时间：150 秒
