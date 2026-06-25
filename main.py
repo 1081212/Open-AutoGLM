@@ -950,6 +950,7 @@ def main():
         device_id=args.device_id,
         model_name=args.model,
         base_url=args.base_url,
+        wda_url=args.wda_url if device_type == DeviceType.IOS else None,
     )
 
     if device_type == DeviceType.IOS:
@@ -960,6 +961,7 @@ def main():
             device_id=args.device_id,
             verbose=not args.quiet,
             lang=args.lang,
+            reporter=reporter,
         )
 
         agent = IOSPhoneAgent(

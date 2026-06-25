@@ -7,7 +7,8 @@ from typing import Any, Callable
 
 from phone_agent.actions.handler import do, finish, parse_action
 from phone_agent.actions.handler_ios import IOSActionHandler
-from phone_agent.config import get_messages, get_system_prompt
+from phone_agent.config import get_messages
+from phone_agent.config.prompts_ios_zh import SYSTEM_PROMPT_IOS_ZH
 from phone_agent.model import ModelClient, ModelConfig
 from phone_agent.model.client import MessageBuilder
 from phone_agent.xctest import XCTestConnection, get_current_app, get_screenshot
@@ -24,10 +25,11 @@ class IOSAgentConfig:
     lang: str = "cn"
     system_prompt: str | None = None
     verbose: bool = True
+    reporter: Any | None = None
 
     def __post_init__(self):
         if self.system_prompt is None:
-            self.system_prompt = get_system_prompt(self.lang)
+            self.system_prompt = SYSTEM_PROMPT_IOS_ZH
 
 
 @dataclass
@@ -116,16 +118,22 @@ class IOSPhoneAgent:
         result = self._execute_step(task, is_first=True)
 
         if result.finished:
-            return result.message or "Task completed"
+            message = result.message or "Task completed"
+            self._finish_report_case(message)
+            return message
 
         # Continue until finished or max steps reached
         while self._step_count < self.agent_config.max_steps:
             result = self._execute_step(is_first=False)
 
             if result.finished:
-                return result.message or "Task completed"
+                message = result.message or "Task completed"
+                self._finish_report_case(message)
+                return message
 
-        return "Max steps reached"
+        message = "Max steps reached"
+        self._finish_report_case(message, max_steps_reached=True)
+        return message
 
     def step(self, task: str | None = None) -> StepResult:
         """
@@ -166,6 +174,15 @@ class IOSPhoneAgent:
         current_app = get_current_app(
             wda_url=self.agent_config.wda_url, session_id=self.agent_config.session_id
         )
+        if self.agent_config.reporter:
+            self.agent_config.reporter.save_step(
+                step=self._step_count,
+                screenshot_base64=screenshot.base64_data,
+                width=screenshot.width,
+                height=screenshot.height,
+                current_app=current_app,
+                sensitive_screenshot=screenshot.is_sensitive,
+            )
 
         # Build messages
         if is_first:
@@ -239,6 +256,13 @@ class IOSPhoneAgent:
             result = self.action_handler.execute(
                 finish(message=str(e)), screenshot.width, screenshot.height
             )
+        if self.agent_config.reporter:
+            self.agent_config.reporter.record_action(
+                step=self._step_count,
+                action=action,
+                success=result.success,
+                message=result.message,
+            )
 
         # Add assistant response to context
         self._context.append(
@@ -275,3 +299,13 @@ class IOSPhoneAgent:
     def step_count(self) -> int:
         """Get the current step count."""
         return self._step_count
+
+    def _finish_report_case(
+        self, message: str, max_steps_reached: bool = False
+    ) -> None:
+        if self.agent_config.reporter and self.agent_config.reporter.current_case:
+            status = self.agent_config.reporter.finish_case(
+                message, max_steps_reached=max_steps_reached
+            )
+            print(f"\nResult: {status} - {message}")
+            print(f"Artifacts: {self.agent_config.reporter.root_dir}\n")

@@ -5,6 +5,14 @@ Bundle IDs are in the format: com.company.appName
 """
 
 APP_PACKAGES_IOS: dict[str, str] = {
+    # Wearfit Pro iOS bundle ID verified from the connected device.
+    "Wearfit Pro": "com.hth.wearUp",
+    "WearfitPro": "com.hth.wearUp",
+    "Wearfit": "com.hth.wearUp",
+    "wearfit pro": "com.hth.wearUp",
+    "wearfit": "com.hth.wearUp",
+    "超级app": "com.hth.wearUp",
+    "com.hth.wearUp": "com.hth.wearUp",
     # Tencent Apps (腾讯系)
     "微信": "com.tencent.xin",
     "企业微信": "com.tencent.ww",

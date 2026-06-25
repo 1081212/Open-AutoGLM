@@ -114,6 +114,7 @@ class TestRunReporter:
         device_id: str | None = None,
         model_name: str | None = None,
         base_url: str | None = None,
+        wda_url: str | None = None,
     ) -> None:
         run_name = artifact_name or datetime.now().strftime("%Y%m%d_%H%M%S")
         self.root_dir = Path(base_dir) / sanitize_name(run_name)
@@ -122,6 +123,7 @@ class TestRunReporter:
         self.device_id = device_id
         self.model_name = model_name
         self.base_url = base_url
+        self.wda_url = wda_url or os.getenv("PHONE_AGENT_WDA_URL", "http://localhost:8100")
         self.cases: list[CaseReport] = []
         self.current_case: CaseReport | None = None
         self.run_started_at = _now()
@@ -276,6 +278,8 @@ class TestRunReporter:
         }
 
     def _dump_ui_xml(self) -> str | None:
+        if self.device_type == "ios":
+            return self._dump_ios_source()
         if self.device_type != "adb":
             return None
         self._run_adb(["shell", "uiautomator", "dump", "/sdcard/window.xml"])
@@ -283,6 +287,8 @@ class TestRunReporter:
         return xml if xml.strip().startswith("<?xml") else None
 
     def _get_current_activity(self) -> str | None:
+        if self.device_type == "ios":
+            return self._get_ios_current_app()
         if self.device_type != "adb":
             return None
         output = self._run_adb(["shell", "dumpsys", "window"])
@@ -290,6 +296,27 @@ class TestRunReporter:
             if "mCurrentFocus" in line or "mFocusedApp" in line:
                 return line.strip()
         return None
+
+    def _dump_ios_source(self) -> str | None:
+        output = self._run_wda("source")
+        if output.strip().startswith("<?xml") or "<XCUIElementType" in output:
+            return output
+        return None
+
+    def _get_ios_current_app(self) -> str | None:
+        output = self._run_wda("wda/activeAppInfo")
+        if not output:
+            return None
+        try:
+            data = json.loads(output)
+        except json.JSONDecodeError:
+            return None
+        value = data.get("value", {})
+        bundle_id = value.get("bundleId")
+        name = value.get("name")
+        if bundle_id and name:
+            return f"{bundle_id} ({name})"
+        return bundle_id or name
 
     def _run_device_shell(self, command: str) -> str | None:
         output = self._run_adb(["shell", *command.split()])
@@ -307,6 +334,27 @@ class TestRunReporter:
                 cmd, capture_output=True, text=True, encoding="utf-8", timeout=15
             )
             return result.stdout
+        except Exception:
+            return ""
+
+    def _run_wda(self, endpoint: str) -> str:
+        if self.device_type != "ios":
+            return ""
+        try:
+            import requests
+
+            base_url = self.wda_url.rstrip("/")
+            response = requests.get(
+                f"{base_url}/{endpoint.lstrip('/')}",
+                timeout=10,
+                verify=False,
+            )
+            if response.status_code != 200:
+                return ""
+            if endpoint == "source":
+                data = response.json()
+                return data.get("value", "")
+            return response.text
         except Exception:
             return ""
 
@@ -495,7 +543,7 @@ def _search_line_value(output: str, pattern: str) -> str | None:
 
 def _extract_ui_texts(xml: str) -> list[str]:
     values: list[str] = []
-    for attr in ("text", "content-desc", "resource-id"):
+    for attr in ("text", "content-desc", "resource-id", "name", "label", "value"):
         for value in re.findall(fr'{attr}="([^"]+)"', xml):
             value = value.strip()
             if value and value not in values:
