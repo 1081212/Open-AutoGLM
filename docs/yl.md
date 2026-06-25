@@ -16,7 +16,8 @@
 - 视频：12 条
 - 我的：10 条
 - P0 用例：4 条
-- P1 用例：115 条
+- P1 用例：94 条
+- P2 用例：21 条
 - normal 规则用例：115 条
 - audio 规则用例：4 条
 
@@ -98,27 +99,27 @@
 | 74 | TC-WEARFIT-WATCH-066-normal | P1 | 网络共享 | normal | 打开网络共享 |
 | 75 | TC-WEARFIT-WATCH-067-normal | P1 | 功能管理 | normal | 打开常用功能管理 |
 | 76 | TC-WEARFIT-WATCH-068-normal | P1 | 未连接拦截 | normal | 验证未连接功能提示 |
-| 77 | TC-WEARFIT-GLASSES-001-normal | P1 | 眼镜入口 | normal | 首页目标眼镜卡片与连接状态 |
-| 78 | TC-WEARFIT-GLASSES-002-normal | P1 | 眼镜 AI | normal | 打开眼镜 AI 对话 |
-| 79 | TC-WEARFIT-GLASSES-003-normal | P1 | 眼镜历史 | normal | 打开眼镜历史会话列表 |
-| 80 | TC-WEARFIT-GLASSES-004-normal | P1 | 眼镜功能管理 | normal | 打开眼镜功能编辑 |
-| 81 | TC-WEARFIT-GLASSES-005-normal | P1 | 眼镜音乐 | normal | 打开眼镜音乐列表 |
-| 82 | TC-WEARFIT-GLASSES-006-normal | P1 | 眼镜音乐添加 | normal | 打开眼镜音乐添加页 |
-| 83 | TC-WEARFIT-GLASSES-007-normal | P1 | 眼镜录音 | normal | 打开眼镜录音列表 |
-| 84 | TC-WEARFIT-GLASSES-008-normal | P1 | 眼镜相册 | normal | 打开眼镜相册 |
-| 85 | TC-WEARFIT-GLASSES-009-normal | P1 | 眼镜相册详情 | normal | 打开眼镜相册详情 |
-| 86 | TC-WEARFIT-GLASSES-010-normal | P1 | 眼镜路线规划 | normal | 打开眼镜路线规划 |
-| 87 | TC-WEARFIT-GLASSES-011-normal | P1 | 眼镜导航 | normal | 打开眼镜导航页 |
-| 88 | TC-WEARFIT-GLASSES-012-normal | P1 | 眼镜系统设置 | normal | 打开眼镜设置 |
-| 89 | TC-WEARFIT-GLASSES-013-normal | P1 | 眼镜 Wi-Fi | normal | 打开眼镜 Wi-Fi 列表 |
-| 90 | TC-WEARFIT-GLASSES-014-normal | P1 | 眼镜媒体设置 | normal | 打开眼镜媒体设置 |
-| 91 | TC-WEARFIT-GLASSES-015-normal | P1 | 眼镜电源设置 | normal | 打开眼镜电源设置 |
-| 92 | TC-WEARFIT-GLASSES-016-normal | P1 | 眼镜按键设置 | normal | 打开眼镜按键设置 |
-| 93 | TC-WEARFIT-GLASSES-017-normal | P1 | 眼镜触控板 | normal | 打开眼镜触控板设置 |
-| 94 | TC-WEARFIT-GLASSES-018-normal | P1 | 眼镜 PPT | normal | 打开眼镜 PPT 功能 |
-| 95 | TC-WEARFIT-GLASSES-019-normal | P1 | 眼镜写作 | normal | 打开眼镜写作功能 |
-| 96 | TC-WEARFIT-GLASSES-020-normal | P1 | 眼镜影片 | normal | 打开眼镜影片编辑首页 |
-| 97 | TC-WEARFIT-GLASSES-021-normal | P1 | 眼镜直播 | normal | 打开眼镜视频直播 |
+| 77 | TC-WEARFIT-GLASSES-001-normal | P2 | 眼镜入口 | normal | 首页目标眼镜卡片与连接状态 |
+| 78 | TC-WEARFIT-GLASSES-002-normal | P2 | 眼镜 AI | normal | 打开眼镜 AI 对话 |
+| 79 | TC-WEARFIT-GLASSES-003-normal | P2 | 眼镜历史 | normal | 打开眼镜历史会话列表 |
+| 80 | TC-WEARFIT-GLASSES-004-normal | P2 | 眼镜功能管理 | normal | 打开眼镜功能编辑 |
+| 81 | TC-WEARFIT-GLASSES-005-normal | P2 | 眼镜音乐 | normal | 打开眼镜音乐列表 |
+| 82 | TC-WEARFIT-GLASSES-006-normal | P2 | 眼镜音乐添加 | normal | 打开眼镜音乐添加页 |
+| 83 | TC-WEARFIT-GLASSES-007-normal | P2 | 眼镜录音 | normal | 打开眼镜录音列表 |
+| 84 | TC-WEARFIT-GLASSES-008-normal | P2 | 眼镜相册 | normal | 打开眼镜相册 |
+| 85 | TC-WEARFIT-GLASSES-009-normal | P2 | 眼镜相册详情 | normal | 打开眼镜相册详情 |
+| 86 | TC-WEARFIT-GLASSES-010-normal | P2 | 眼镜路线规划 | normal | 打开眼镜路线规划 |
+| 87 | TC-WEARFIT-GLASSES-011-normal | P2 | 眼镜导航 | normal | 打开眼镜导航页 |
+| 88 | TC-WEARFIT-GLASSES-012-normal | P2 | 眼镜系统设置 | normal | 打开眼镜设置 |
+| 89 | TC-WEARFIT-GLASSES-013-normal | P2 | 眼镜 Wi-Fi | normal | 打开眼镜 Wi-Fi 列表 |
+| 90 | TC-WEARFIT-GLASSES-014-normal | P2 | 眼镜媒体设置 | normal | 打开眼镜媒体设置 |
+| 91 | TC-WEARFIT-GLASSES-015-normal | P2 | 眼镜电源设置 | normal | 打开眼镜电源设置 |
+| 92 | TC-WEARFIT-GLASSES-016-normal | P2 | 眼镜按键设置 | normal | 打开眼镜按键设置 |
+| 93 | TC-WEARFIT-GLASSES-017-normal | P2 | 眼镜触控板 | normal | 打开眼镜触控板设置 |
+| 94 | TC-WEARFIT-GLASSES-018-normal | P2 | 眼镜 PPT | normal | 打开眼镜 PPT 功能 |
+| 95 | TC-WEARFIT-GLASSES-019-normal | P2 | 眼镜写作 | normal | 打开眼镜写作功能 |
+| 96 | TC-WEARFIT-GLASSES-020-normal | P2 | 眼镜影片 | normal | 打开眼镜影片编辑首页 |
+| 97 | TC-WEARFIT-GLASSES-021-normal | P2 | 眼镜直播 | normal | 打开眼镜视频直播 |
 | 98 | TC-WEARFIT-VIDEO-001-normal | P1 | 视频首页 | normal | 视频 Tab 信息流加载与播放态 |
 | 99 | TC-WEARFIT-VIDEO-002-normal | P1 | 视频切换 | normal | 视频上下滑切换 |
 | 100 | TC-WEARFIT-VIDEO-003-normal | P1 | 视频点赞 | normal | 视频点赞按钮状态验证 |
@@ -4947,7 +4948,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5007,7 +5008,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5070,7 +5071,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5133,7 +5134,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5196,7 +5197,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5259,7 +5260,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5322,7 +5323,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5385,7 +5386,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5448,7 +5449,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5511,7 +5512,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5574,7 +5575,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5637,7 +5638,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5700,7 +5701,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5763,7 +5764,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5826,7 +5827,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5889,7 +5890,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -5952,7 +5953,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -6015,7 +6016,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -6078,7 +6079,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -6141,7 +6142,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
@@ -6204,7 +6205,7 @@
 
 ### 基本信息
 
-- 优先级：P1
+- 优先级：P2
 - 应用名称：Wearfit Pro
 - 包名：`com.wakeup.howear`
 - 测试类型：功能 / 回归
