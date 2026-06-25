@@ -139,8 +139,9 @@ def filter_test_cases(
     test_cases: list[ParsedTestCase],
     priorities: list[str] | None = None,
     modules: list[str] | None = None,
+    limit: int | None = None,
 ) -> tuple[list[ParsedTestCase], list[str]]:
-    """按优先级和关联模块过滤用例。多个过滤条件之间是 AND 关系。"""
+    """按优先级、关联模块和数量上限过滤用例。多个过滤条件之间是 AND 关系。"""
     filtered = test_cases
     messages: list[str] = []
 
@@ -161,6 +162,10 @@ def filter_test_cases(
             if (test_case.module or "").strip() in selected_modules
         ]
         messages.append(f"module: {', '.join(sorted(selected_modules))}")
+
+    if limit is not None:
+        filtered = filtered[:limit]
+        messages.append(f"limit: {limit}")
 
     return filtered, messages
 
@@ -536,6 +541,9 @@ Examples:
     # Run all test cases from a Markdown file
     python main.py --file docs/wearfit_cases.md
 
+    # Run at most 5 filtered test cases from a Markdown file
+    python main.py --file docs/wearfit_cases.md --priority P0 --limit 5
+
     # Check WebDriverAgent status
     python main.py --device-type ios --wda-status
 
@@ -696,6 +704,12 @@ Examples:
     )
 
     parser.add_argument(
+        "--limit",
+        type=int,
+        help="Maximum number of test cases to run from --file after filtering.",
+    )
+
+    parser.add_argument(
         "tasks",
         nargs="*",
         type=str,
@@ -709,6 +723,11 @@ Examples:
         parser.error("--priority can only be used together with --file")
     if args.module and not args.file:
         parser.error("--module can only be used together with --file")
+    if args.limit is not None:
+        if not args.file:
+            parser.error("--limit can only be used together with --file")
+        if args.limit <= 0:
+            parser.error("--limit must be a positive integer")
     return args
 
 
@@ -1032,6 +1051,7 @@ def main():
             test_cases,
             priorities=args.priority,
             modules=args.module,
+            limit=args.limit,
         )
         if filter_messages:
             filter_text = "; ".join(filter_messages)
