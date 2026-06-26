@@ -36,6 +36,10 @@ class ModelResponse:
     time_to_first_token: float | None = None  # Time to first token (seconds)
     time_to_thinking_end: float | None = None  # Time to thinking end (seconds)
     total_time: float | None = None  # Total inference time (seconds)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cached_tokens: int = 0
+    total_tokens: int = 0
 
 
 class ModelClient:
@@ -76,16 +80,21 @@ class ModelClient:
             top_p=self.config.top_p,
             frequency_penalty=self.config.frequency_penalty,
             extra_body=self.config.extra_body,
+            stream_options={"include_usage": True},
             stream=True,
         )
 
         raw_content = ""
+        usage = None
         buffer = ""  # Buffer to hold content that might be part of a marker
         action_markers = ["finish(message=", "do(action="]
         in_action_phase = False  # Track if we've entered the action phase
         first_token_received = False
 
         for chunk in stream:
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage is not None:
+                usage = chunk_usage
             if len(chunk.choices) == 0:
                 continue
             if chunk.choices[0].delta.content is not None:
@@ -177,6 +186,10 @@ class ModelClient:
             time_to_first_token=time_to_first_token,
             time_to_thinking_end=time_to_thinking_end,
             total_time=total_time,
+            prompt_tokens=_usage_value(usage, "prompt_tokens"),
+            completion_tokens=_usage_value(usage, "completion_tokens"),
+            cached_tokens=_cached_tokens(usage),
+            total_tokens=_usage_value(usage, "total_tokens"),
         )
 
     def _parse_response(self, content: str) -> tuple[str, str]:
@@ -220,6 +233,29 @@ class ModelClient:
 
         # Rule 4: No markers found, return content as action
         return "", content
+
+
+def _usage_value(usage: Any, field: str) -> int:
+    if usage is None:
+        return 0
+    if isinstance(usage, dict):
+        return int(usage.get(field) or 0)
+    return int(getattr(usage, field, 0) or 0)
+
+
+def _cached_tokens(usage: Any) -> int:
+    if usage is None:
+        return 0
+    details = (
+        usage.get("prompt_tokens_details")
+        if isinstance(usage, dict)
+        else getattr(usage, "prompt_tokens_details", None)
+    )
+    if not details:
+        return 0
+    if isinstance(details, dict):
+        return int(details.get("cached_tokens") or 0)
+    return int(getattr(details, "cached_tokens", 0) or 0)
 
 
 class MessageBuilder:

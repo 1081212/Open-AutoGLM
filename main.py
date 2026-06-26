@@ -413,6 +413,30 @@ def print_judge_token_summary(reporter: TestRunReporter) -> None:
     )
 
 
+def vision_tokens_for_test_step(reporter: TestRunReporter, test_step_index: int) -> int:
+    """Return total vision-model tokens used by one parsed Markdown test step."""
+    if not reporter.current_case:
+        return 0
+    return sum(
+        step.vision_total_tokens
+        for step in reporter.current_case.steps
+        if step.test_step_index == test_step_index
+    )
+
+
+def vision_tokens_for_case(case) -> int:
+    """Return total vision-model tokens used by one case."""
+    return sum(step.vision_total_tokens for step in case.steps)
+
+
+def print_vision_token_summary(reporter: TestRunReporter) -> None:
+    """Print total vision-model token usage for the current run."""
+    total_tokens = sum(
+        step.vision_total_tokens for case in reporter.cases for step in case.steps
+    )
+    print(f"Total Vision Tokens: {total_tokens}")
+
+
 def filter_test_cases(
     test_cases: list[ParsedTestCase],
     priorities: list[str] | None = None,
@@ -1578,7 +1602,13 @@ def main():
                             if status_judge
                             else ""
                         )
-                        print(f"Step Result: {step_status} - {result}{token_text}")
+                        vision_step_tokens = vision_tokens_for_test_step(
+                            reporter, execution_step.index
+                        )
+                        print(
+                            f"Step Result: {step_status} - {result}{token_text} "
+                            f"Vision Tokens: {vision_step_tokens}"
+                        )
                         agent.reset()
 
                         if step_status in {"FAIL", "BLOCKED"}:
@@ -1633,12 +1663,22 @@ def main():
                             f"Case Judge Tokens: {usage} "
                             f"(prompt={prompt_usage}, completion={completion_usage})"
                         )
+                    if reporter.cases:
+                        print(
+                            f"Case Vision Tokens: "
+                            f"{vision_tokens_for_case(reporter.cases[-1])}"
+                        )
                     print(f"\nResult {index}/{total_tasks}: {final_result}")
                 else:
                     reporter.start_case(task, index)
                     result = agent.run(task)
                     if reporter.current_case:
                         reporter.finish_case(result)
+                    if reporter.cases:
+                        print(
+                            f"Case Vision Tokens: "
+                            f"{vision_tokens_for_case(reporter.cases[-1])}"
+                        )
                     print(f"\nResult {index}/{total_tasks}: {result}")
                     agent.reset()
         except (Exception, KeyboardInterrupt) as exc:
@@ -1648,11 +1688,13 @@ def main():
                     f"{type(exc).__name__}: {exc}"
                 )
             reporter.finish_run()
+            print_vision_token_summary(reporter)
             if status_judge:
                 print_judge_token_summary(reporter)
             print(f"\nHTML report: {reporter.root_dir / 'index.html'}")
             raise
         reporter.finish_run()
+        print_vision_token_summary(reporter)
         if status_judge:
             print_judge_token_summary(reporter)
         print(f"\nSummary report: {reporter.root_dir / 'summary.md'}")

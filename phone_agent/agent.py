@@ -394,6 +394,10 @@ class PhoneAgent:
                 action=action,
                 success=result.success,
                 message=result.message,
+                vision_prompt_tokens=response.prompt_tokens,
+                vision_completion_tokens=response.completion_tokens,
+                vision_cached_tokens=response.cached_tokens,
+                vision_total_tokens=response.total_tokens,
             )
 
         # Add assistant response to context

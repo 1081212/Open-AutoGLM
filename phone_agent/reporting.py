@@ -63,6 +63,10 @@ class StepArtifact:
     action: dict[str, Any] | None = None
     action_success: bool | None = None
     action_message: str | None = None
+    vision_prompt_tokens: int = 0
+    vision_completion_tokens: int = 0
+    vision_cached_tokens: int = 0
+    vision_total_tokens: int = 0
     sensitive_screenshot: bool = False
     ui_texts: list[str] = field(default_factory=list)
 
@@ -278,6 +282,10 @@ class TestRunReporter:
         action: dict[str, Any] | None,
         success: bool | None,
         message: str | None,
+        vision_prompt_tokens: int = 0,
+        vision_completion_tokens: int = 0,
+        vision_cached_tokens: int = 0,
+        vision_total_tokens: int = 0,
     ) -> None:
         if not self.current_case or not self.current_case.steps:
             return
@@ -285,6 +293,10 @@ class TestRunReporter:
         artifact.action = action
         artifact.action_success = success
         artifact.action_message = message
+        artifact.vision_prompt_tokens = vision_prompt_tokens
+        artifact.vision_completion_tokens = vision_completion_tokens
+        artifact.vision_cached_tokens = vision_cached_tokens
+        artifact.vision_total_tokens = vision_total_tokens
         if success is False and message:
             self.current_case.issues.append(message)
         self._write_case_json(self.current_case)
@@ -509,6 +521,7 @@ class TestRunReporter:
             lines.append("")
         if case.test_steps:
             usage = _judge_usage_for_case(case)
+            vision_usage = _vision_usage_for_case(case)
             lines.extend(
                 [
                     "## Judge Token Usage",
@@ -516,6 +529,10 @@ class TestRunReporter:
                     f"- Prompt tokens: {usage['prompt']}",
                     f"- Completion tokens: {usage['completion']}",
                     f"- Total tokens: {usage['total']}",
+                    "",
+                    "## Vision Token Usage",
+                    "",
+                    f"- Total tokens: {vision_usage['total']}",
                     "",
                 ]
             )
@@ -525,7 +542,9 @@ class TestRunReporter:
             action_name = action.get("action") or action.get("_metadata") or ""
             lines.append(
                 f"- Step {step.step:03d}: {action_name} | "
-                f"success={step.action_success} | screenshot={step.screenshot}"
+                f"success={step.action_success} | "
+                f"vision_tokens={step.vision_total_tokens} | "
+                f"screenshot={step.screenshot}"
             )
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -554,6 +573,7 @@ class TestRunReporter:
                     f"({info.get('version_code')})"
                 )
         usage = _judge_usage_for_run(self.cases)
+        vision_usage = _vision_usage_for_run(self.cases)
         lines.extend(
             [
                 "",
@@ -562,17 +582,22 @@ class TestRunReporter:
                 f"- Prompt tokens: {usage['prompt']}",
                 f"- Completion tokens: {usage['completion']}",
                 f"- Total tokens: {usage['total']}",
+                "",
+                "## Vision Token Usage",
+                "",
+                f"- Total tokens: {vision_usage['total']}",
             ]
         )
         lines.extend(["", "## Cases", ""])
-        lines.append("| Case | Status | Judge Tokens | Report | Last Screenshot |")
-        lines.append("| --- | --- | ---: | --- | --- |")
+        lines.append("| Case | Status | Vision Tokens | Judge Tokens | Report | Last Screenshot |")
+        lines.append("| --- | --- | ---: | ---: | --- | --- |")
         for case in self.cases:
             last = case.steps[-1] if case.steps else None
             screenshot = f"{case.case_id}/{last.screenshot}" if last and last.screenshot else ""
             case_usage = _judge_usage_for_case(case)
+            case_vision_usage = _vision_usage_for_case(case)
             lines.append(
-                f"| {case.case_id} | {case.status} | {case_usage['total']} | {case.case_id}/report.md | {screenshot} |"
+                f"| {case.case_id} | {case.status} | {case_vision_usage['total']} | {case_usage['total']} | {case.case_id}/report.md | {screenshot} |"
             )
         summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -580,6 +605,7 @@ class TestRunReporter:
         path = Path(case.artifacts_dir) / "report.html"
         meta = _case_metadata(case)
         judge_usage = _judge_usage_for_case(case)
+        vision_usage = _vision_usage_for_case(case)
         lines = [
             "<!doctype html>",
             '<html lang="zh-CN">',
@@ -610,6 +636,7 @@ class TestRunReporter:
             _metric_card("执行时长", _case_duration(case)),
             _metric_card("测试步骤数", str(len(case.test_steps) or len(case.steps))),
             _metric_card("模型动作数", str(len(case.steps))),
+            _metric_card("视觉模型 Tokens", str(vision_usage["total"])),
             _metric_card(
                 "判定模型 Tokens",
                 _format_token_usage(
@@ -787,6 +814,38 @@ def _judge_usage_for_run(cases: list[CaseReport]) -> dict[str, int]:
     return {"prompt": prompt, "completion": completion, "total": total}
 
 
+def _vision_usage_for_case(case: CaseReport) -> dict[str, int]:
+    prompt = sum(step.vision_prompt_tokens for step in case.steps)
+    completion = sum(step.vision_completion_tokens for step in case.steps)
+    cached = sum(step.vision_cached_tokens for step in case.steps)
+    total = sum(step.vision_total_tokens for step in case.steps)
+    return {
+        "prompt": prompt,
+        "completion": completion,
+        "cached": cached,
+        "total": total,
+    }
+
+
+def _vision_usage_for_run(cases: list[CaseReport]) -> dict[str, int]:
+    prompt = 0
+    completion = 0
+    cached = 0
+    total = 0
+    for case in cases:
+        usage = _vision_usage_for_case(case)
+        prompt += usage["prompt"]
+        completion += usage["completion"]
+        cached += usage["cached"]
+        total += usage["total"]
+    return {
+        "prompt": prompt,
+        "completion": completion,
+        "cached": cached,
+        "total": total,
+    }
+
+
 def _format_token_usage(prompt: int, completion: int, total: int) -> str:
     if not (prompt or completion or total):
         return "-"
@@ -808,6 +867,7 @@ def _build_summary_html(
     pass_rate = round((pass_count / total) * 100) if total else 0
     duration = _run_duration(cases)
     judge_usage = _judge_usage_for_run(cases)
+    vision_usage = _vision_usage_for_run(cases)
 
     lines = [
         "<!doctype html>",
@@ -840,6 +900,7 @@ def _build_summary_html(
         _summary_tile("Blocked", str(blocked_count), "环境或流程阻塞", "blocked"),
         _summary_tile("Other", str(other_count), "未完成/未知", "other"),
         _summary_tile("Duration", duration, "首尾用例时间跨度", "duration"),
+        _summary_tile("Vision Tokens", str(vision_usage["total"]), "视觉执行模型总消耗", "other"),
         _summary_tile("Judge Tokens", str(judge_usage["total"]), "文本判定模型总消耗", "other"),
         "</section>",
         '<section class="panel split-panel">',
@@ -855,11 +916,12 @@ def _build_summary_html(
         issue_step = _find_issue_step(case)
         reason = _issue_reason(case, issue_step) if case.status != "PASS" else case.result_message or "Passed"
         case_usage = _judge_usage_for_case(case)
+        case_vision_usage = _vision_usage_for_case(case)
         lines.append(
             '<a class="case-row" href="' + _h(report_link) + '">'
             f'<span class="status-dot {case.status.lower()}"></span>'
             f'<span class="case-name"><strong>{_h(case.case_id)}</strong><em>{_h(_display_title(case))}</em></span>'
-            f'<span class="case-steps">{_case_step_count(case)} · {_h(_case_duration(case))} · Judge {case_usage["total"]}</span>'
+            f'<span class="case-steps">{_case_step_count(case)} · {_h(_case_duration(case))} · Vision {case_vision_usage["total"]} · Judge {case_usage["total"]}</span>'
             f'<span class="case-reason">{_h(_shorten(reason, 110))}</span>'
             f'<span class="status {case.status.lower()}">{_h(case.status)}</span>'
             "</a>"
@@ -955,6 +1017,7 @@ def _render_step_html(case: CaseReport, step: StepArtifact) -> str:
             f"<dt>App</dt><dd>{_h(step.current_app)}</dd>",
             f"<dt>Activity</dt><dd>{_h(step.current_activity or '')}</dd>",
             f"<dt>动作成功</dt><dd>{_h(str(step.action_success))}</dd>",
+            f"<dt>视觉 Tokens</dt><dd>{step.vision_total_tokens}</dd>",
             f"<dt>动作消息</dt><dd>{_h(step.action_message or '')}</dd>",
             f"<dt>UI 文本</dt><dd>{_h(ui_texts)}</dd>",
             "</dl>",
@@ -975,6 +1038,7 @@ def _render_test_step_html(
         test_step.judge_completion_tokens,
         test_step.judge_total_tokens,
     )
+    vision_total_tokens = sum(step.vision_total_tokens for step in model_steps)
     model_html = []
     if model_steps:
         for step in model_steps:
@@ -996,6 +1060,7 @@ def _render_test_step_html(
             f"<dt>目标状态</dt><dd>{_h(test_step.target_state or '')}</dd>",
             f"<dt>期望 Activity</dt><dd>{_h(test_step.activity or '')}</dd>",
             f"<dt>执行时长</dt><dd>{_h(_test_step_duration(test_step))}</dd>",
+            f"<dt>视觉 Tokens</dt><dd>{vision_total_tokens}</dd>",
             f"<dt>判定 Tokens</dt><dd>{_h(token_usage)}</dd>",
             f"<dt>结果</dt><dd>{_h(test_step.result_message or '')}</dd>",
             f"<dt>判定原文</dt><dd>{_h(test_step.judge_raw or '')}</dd>",
