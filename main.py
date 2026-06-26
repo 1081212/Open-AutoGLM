@@ -14,11 +14,13 @@ Environment Variables:
 """
 
 import argparse
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -33,6 +35,7 @@ from phone_agent.config.apps_ios import list_supported_apps as list_ios_apps
 from phone_agent.device_factory import DeviceType, get_device_factory, set_device_type
 from phone_agent.model import ModelConfig
 from phone_agent.reporting import TestRunReporter
+from phone_agent.status_judge import JudgeConfig, StepStatusJudge
 from phone_agent.rule_loader import load_rules
 from phone_agent.xctest import XCTestConnection
 from phone_agent.xctest import list_devices as list_ios_devices
@@ -48,6 +51,17 @@ class ParsedTestCase:
     priority: str | None
     module: str | None
     task: str
+
+
+@dataclass
+class ParsedExecutionStep:
+    """Markdown 测试用例中的单个固定执行步骤。"""
+
+    index: int
+    text: str
+    target_state: str | None = None
+    activity: str | None = None
+    raw: str = ""
 
 
 def parse_test_case_heading(task: str) -> tuple[str | None, str | None, str | None]:
@@ -135,6 +149,270 @@ def load_test_cases_from_file(file_path: str) -> list[ParsedTestCase]:
     return cases
 
 
+def parse_execution_steps(task: str) -> list[ParsedExecutionStep]:
+    """解析测试用例中的“### 执行步骤”编号列表。"""
+    section_match = re.search(
+        r"^###\s+执行步骤\s*$([\s\S]*?)(?=^###\s+|\Z)",
+        task,
+        re.MULTILINE,
+    )
+    if not section_match:
+        return []
+
+    section = section_match.group(1)
+    step_matches = list(re.finditer(r"^\s*(\d+)\.\s+(.+?)\s*$", section, re.MULTILINE))
+    steps: list[ParsedExecutionStep] = []
+    for pos, match in enumerate(step_matches):
+        start = match.start()
+        end = step_matches[pos + 1].start() if pos + 1 < len(step_matches) else len(section)
+        raw = section[start:end].strip()
+        text = match.group(2).strip()
+        target_state = parse_step_field(raw, "目标状态")
+        activity = parse_step_field(raw, "所在 Activity")
+        steps.append(
+            ParsedExecutionStep(
+                index=int(match.group(1)),
+                text=text,
+                target_state=target_state,
+                activity=activity,
+                raw=raw,
+            )
+        )
+    return steps
+
+
+def parse_step_field(step_block: str, field_name: str) -> str | None:
+    """解析单个执行步骤下的固定字段，例如：目标状态：xxx。"""
+    pattern = re.compile(rf"^\s*{re.escape(field_name)}\s*[:：]\s*(.+?)\s*$", re.MULTILINE)
+    match = pattern.search(step_block)
+    return match.group(1).strip() if match else None
+
+
+def extract_markdown_section(task: str, title: str) -> str:
+    """提取 Markdown 三级标题段落。"""
+    match = re.search(
+        rf"^###\s+{re.escape(title)}\s*$([\s\S]*?)(?=^###\s+|\Z)",
+        task,
+        re.MULTILINE,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def build_step_task(
+    test_case: ParsedTestCase,
+    step: ParsedExecutionStep,
+    all_steps: list[ParsedExecutionStep],
+    completed_summaries: list[str],
+    external_status_judge: bool = False,
+) -> str:
+    """构造给模型的单步任务，只要求完成当前测试步骤。"""
+    target_state = step.target_state or "按当前步骤要求达到可观察的目标状态。"
+    activity = step.activity or "未指定"
+    completed_text = "\n".join(completed_summaries) if completed_summaries else "暂无。"
+    all_steps_text = format_execution_steps(all_steps)
+    goal = extract_markdown_section(test_case.task, "测试目标")
+    preconditions = extract_markdown_section(test_case.task, "前置条件")
+    failure_conditions = extract_markdown_section(test_case.task, "失败条件")
+    expected = extract_markdown_section(test_case.task, "预期结果")
+    if external_status_judge:
+        finish_requirement = """7. 当前启用了外部文本判定模型，你只负责执行当前步骤和描述当前可观察证据。
+8. 当前步骤完成或无法继续时，调用 finish(message="...") 结束；message 只写你看到了什么、做了什么、为什么停止。
+9. 不要在 finish message 中输出 STATUS、PASS、SKIPPED、BLOCKED、FAIL、REVIEW；最终状态由外部判定模型统一判断。
+10. 如果入口或目标内容找不到，不要无限探索；合理查找后 finish 并说明找不到的原因。
+11. 如果当前步骤结果无法明确判断，也 finish 并说明证据不足。
+12. 不要进入视频、我的、设置、搜索、小游戏等与当前步骤无关的页面，除非当前步骤明确要求。
+13. 不要执行支付、删除、解绑、上传隐私数据、真实发送或配置保存等禁止行为。"""
+        conditional_requirement = "3. 如果当前步骤是“如果...则...”的条件步骤，且条件已经不需要执行，调用 finish 并说明条件不成立或无需执行。"
+    else:
+        finish_requirement = """7. finish 的 message 第一行必须是下面五者之一，且必须大写：
+   STATUS: PASS
+   STATUS: SKIPPED
+   STATUS: BLOCKED
+   STATUS: FAIL
+   STATUS: REVIEW
+8. message 第二行开始写 REASON，说明你完成了什么、看到了什么证据。
+9. 如果入口或目标内容找不到，不要无限探索；合理查找后使用 STATUS: BLOCKED 并说明原因。
+10. 如果当前步骤结果无法明确判断，但也没有明确失败或阻塞，使用 STATUS: REVIEW。
+11. 不要进入视频、我的、设置、搜索、小游戏等与当前步骤无关的页面，除非当前步骤明确要求。
+12. 不要执行支付、删除、解绑、上传隐私数据、真实发送或配置保存等禁止行为。"""
+        conditional_requirement = "3. 如果当前步骤是“如果...则...”的条件步骤，且条件已经不需要执行，使用 STATUS: SKIPPED。"
+    return f"""你正在执行一个自动化测试用例，但本次只允许完成当前这一个测试步骤。
+
+用例 ID：{test_case.case_id or "unknown"}
+用例标题：{test_case.title or "unknown"}
+规则类型：{test_case.rule_type or "unknown"}
+优先级：{test_case.priority or "unknown"}
+关联模块：{test_case.module or "unknown"}
+
+测试目标：
+{goal or "未提供。"}
+
+前置条件：
+{preconditions or "未提供。"}
+
+全局预期结果：
+{expected or "未提供。"}
+
+全局失败条件和禁止行为：
+{failure_conditions or "未提供。"}
+
+已完成步骤摘要：
+{completed_text}
+
+完整执行步骤列表：
+{all_steps_text}
+
+步骤衔接要求：
+1. 开始当前步骤前，先核对“已完成步骤摘要”是否真的满足当前步骤的前置状态。
+2. 如果上一条步骤是 SKIPPED、STEP_LIMIT 或 UNKNOWN，你需要先根据当前截图判断上一条步骤的目标状态是否已经满足。
+3. 如果上一条步骤目标状态尚未满足，可以先补足上一条步骤必要动作，再执行当前步骤。
+4. 如果上一条步骤目标状态已经满足，不要重复执行上一条步骤，直接执行当前步骤。
+5. 仍然不要执行当前步骤之后的后续步骤。
+
+当前执行第 {step.index} 步，共 {len(all_steps)} 步。
+
+当前步骤：
+{step.text}
+
+当前步骤目标状态：
+{target_state}
+
+当前步骤期望 Activity：
+{activity}
+
+执行要求：
+1. 只完成当前步骤，不要主动提前执行后续步骤。
+2. 第一优先级：如果当前截图已经满足当前步骤目标，立即调用 finish，不要继续点击、滑动或进入详情。
+{conditional_requirement}
+4. 如果当前步骤目标状态达成后，立即调用 finish，不要继续探索。
+5. 当前步骤不要求查找后续步骤入口时，禁止为了后续步骤继续查找、点击或滑动。
+6. 如果当前步骤只是点击首页、切换底部导航、返回首页或确认当前页：
+   - 当前页面已经显示目标页面核心内容时，直接 finish。
+   - 只允许点击底部导航/明确导航控件，不要点击手表卡片、健康数据卡片、右上角图标、列表项或详情入口。
+   - 不要把“确认在首页”理解成“进入设备详情”。
+{finish_requirement}
+"""
+
+
+def format_execution_steps(steps: list[ParsedExecutionStep]) -> str:
+    """Format all parsed execution steps for prompts and judge context."""
+    lines: list[str] = []
+    for step in steps:
+        parts = [f"{step.index}. {step.text}"]
+        if step.target_state:
+            parts.append(f"目标状态：{step.target_state}")
+        if step.activity:
+            parts.append(f"Activity：{step.activity}")
+        lines.append(" | ".join(parts))
+    return "\n".join(lines)
+
+
+def classify_step_result(result: str, is_last_step: bool = False) -> str:
+    """解析模型显式输出的步骤状态，不再用自然语言关键词判定。
+
+    兜底策略：
+    - 模型跑满当前步骤步数时，非最后一步记为 STEP_LIMIT 并继续；
+      最后一步记为 BLOCKED。
+    - 模型没有按约定输出 STATUS 时，记为 REVIEW，不再自动补成 PASS。
+    """
+    text = result or ""
+    status_match = re.search(
+        r"^\s*(?:STATUS|状态)\s*[:：]\s*(PASS|SKIPPED|BLOCKED|FAIL|REVIEW)\b",
+        text,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if status_match:
+        return status_match.group(1).upper()
+    if text.strip() == "Max steps reached":
+        return "BLOCKED" if is_last_step else "STEP_LIMIT"
+    return "REVIEW"
+
+
+def build_operation_log(reporter: TestRunReporter, test_step_index: int) -> str:
+    """Build text-only evidence for the judge model from current step artifacts."""
+    case = reporter.current_case
+    if not case:
+        return ""
+
+    lines: list[str] = []
+    for artifact in case.steps:
+        if artifact.test_step_index != test_step_index:
+            continue
+        action = artifact.action or {}
+        action_name = action.get("action") or action.get("_metadata") or "unknown"
+        action_payload = {
+            key: value
+            for key, value in action.items()
+            if key not in {"_metadata"} and value not in (None, "")
+        }
+        lines.append(f"- 动作 {artifact.step}: {action_name}")
+        if action_payload:
+            lines.append(
+                f"  参数: {_clip_text(json.dumps(action_payload, ensure_ascii=False), 800)}"
+            )
+        lines.append(f"  执行结果: {artifact.action_success}")
+        if artifact.action_message:
+            lines.append(f"  动作消息: {_clip_text(artifact.action_message, 900)}")
+        if artifact.current_app:
+            lines.append(f"  当前应用: {artifact.current_app}")
+        if artifact.current_activity:
+            lines.append(f"  当前 Activity: {artifact.current_activity}")
+        if artifact.ui_texts:
+            lines.append(
+                f"  动作前/收尾时 UI 文本: {' | '.join(artifact.ui_texts[:25])}"
+            )
+    return "\n".join(lines)
+
+
+def build_agent_text_log(context: list[dict], max_chars: int = 4000) -> str:
+    """Extract text-only agent context for the judge model."""
+    lines: list[str] = []
+    for message in context:
+        role = message.get("role", "unknown")
+        content = message.get("content", "")
+        text_parts: list[str] = []
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_parts.append(str(item.get("text") or ""))
+        text = "\n".join(part for part in text_parts if part).strip()
+        if text:
+            lines.append(f"[{role}]\n{text}")
+    joined = "\n\n".join(lines)
+    if len(joined) > max_chars:
+        return joined[-max_chars:]
+    return joined
+
+
+def _clip_text(value: str, max_chars: int) -> str:
+    """Clip long text while preserving the beginning and explicit truncation."""
+    text = value or ""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"...[truncated {len(text) - max_chars} chars]"
+
+
+def print_judge_token_summary(reporter: TestRunReporter) -> None:
+    """Print total text-judge token usage for the current run."""
+    total_tokens = sum(
+        step.judge_total_tokens for case in reporter.cases for step in case.test_steps
+    )
+    prompt_tokens = sum(
+        step.judge_prompt_tokens for case in reporter.cases for step in case.test_steps
+    )
+    completion_tokens = sum(
+        step.judge_completion_tokens
+        for case in reporter.cases
+        for step in case.test_steps
+    )
+    print(
+        f"\nTotal Judge Tokens: {total_tokens} "
+        f"(prompt={prompt_tokens}, completion={completion_tokens})"
+    )
+
+
 def filter_test_cases(
     test_cases: list[ParsedTestCase],
     priorities: list[str] | None = None,
@@ -168,6 +446,40 @@ def filter_test_cases(
         messages.append(f"limit: {limit}")
 
     return filtered, messages
+
+
+def reset_android_wearfit_home(device_id: str | None = None, wait_seconds: int = 8) -> None:
+    """每条用例开始前重置 Wearfit Pro 到 launcher 入口。
+
+    使用已验证可启动的 exported SplashActivity，并清理当前 task 栈；
+    不使用 force-stop，避免每条用例都完整冷启动导致过慢。
+    """
+    cmd = ["adb"]
+    if device_id:
+        cmd.extend(["-s", device_id])
+    cmd.extend(
+        [
+            "shell",
+            "am",
+            "start",
+            "-W",
+            "-a",
+            "android.intent.action.MAIN",
+            "-c",
+            "android.intent.category.LAUNCHER",
+            "-n",
+            "com.wakeup.howear/com.wakeup.howear.view.app.SplashActivity",
+            "-f",
+            "0x10008000",
+        ]
+    )
+    print("Resetting Wearfit Pro to home entry...")
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    if result.returncode != 0:
+        print("Reset command failed:")
+        print((result.stderr or result.stdout).strip())
+    print(f"Waiting {wait_seconds}s for app home to settle...")
+    time.sleep(wait_seconds)
 
 
 def print_test_case_heading(task: str) -> None:
@@ -575,6 +887,43 @@ Examples:
     )
 
     parser.add_argument(
+        "--judge-base-url",
+        type=str,
+        default=os.getenv(
+            "PHONE_AGENT_JUDGE_BASE_URL",
+            "https://ark.cn-beijing.volces.com/api/v3",
+        ),
+        help="Text judge model API base URL",
+    )
+
+    parser.add_argument(
+        "--judge-model",
+        type=str,
+        default=os.getenv("PHONE_AGENT_JUDGE_MODEL", "ep-20240813102137-m62n6"),
+        help="Text judge model name",
+    )
+
+    parser.add_argument(
+        "--judge-api-key-env",
+        type=str,
+        default=os.getenv("PHONE_AGENT_JUDGE_API_KEY_ENV", "ARK_API_KEY"),
+        help="Environment variable name that stores the text judge model API key",
+    )
+
+    parser.add_argument(
+        "--judge-api-key",
+        type=str,
+        default=os.getenv("PHONE_AGENT_JUDGE_API_KEY"),
+        help="Text judge model API key. If omitted, --judge-api-key-env is used.",
+    )
+
+    parser.add_argument(
+        "--disable-status-judge",
+        action="store_true",
+        help="Disable text judge model and fall back to local STATUS parsing.",
+    )
+
+    parser.add_argument(
         "--max-steps",
         type=int,
         default=int(os.getenv("PHONE_AGENT_MAX_STEPS", "100")),
@@ -971,6 +1320,26 @@ def main():
         base_url=args.base_url,
         wda_url=args.wda_url if device_type == DeviceType.IOS else None,
     )
+    status_judge: StepStatusJudge | None = None
+    if args.file and not args.disable_status_judge:
+        judge_config = JudgeConfig(
+            base_url=args.judge_base_url,
+            model_name=args.judge_model,
+            api_key_env=args.judge_api_key_env,
+            api_key=args.judge_api_key,
+        )
+        status_judge = StepStatusJudge(judge_config)
+        reporter.environment["judge_model"] = judge_config.model_name
+        reporter.environment["judge_base_url"] = judge_config.base_url
+        reporter.environment["judge_api_key_env"] = judge_config.api_key_env
+    external_judge_system_override = ""
+    if status_judge:
+        external_judge_system_override = (
+            "\n\n【外部判定模式】当前测试运行启用了独立文本判定模型。"
+            "你作为手机执行 agent 只负责操作和描述可观察证据，不负责判定 PASS/FAIL。"
+            "当当前步骤完成、无需执行或无法继续时，直接调用 finish(message=\"...\")，"
+            "message 只写事实证据和停止原因。不要输出 STATUS、PASS、SKIPPED、BLOCKED、FAIL、REVIEW。"
+        )
 
     if device_type == DeviceType.IOS:
         # Create iOS agent
@@ -981,7 +1350,14 @@ def main():
             verbose=not args.quiet,
             lang=args.lang,
             reporter=reporter,
+            auto_manage_report_case=not bool(args.file),
+            require_structured_finish_status=not bool(status_judge),
+            system_prompt=None,
         )
+        if external_judge_system_override:
+            agent_config.system_prompt = (
+                agent_config.system_prompt or ""
+            ) + external_judge_system_override
 
         agent = IOSPhoneAgent(
             model_config=model_config,
@@ -995,7 +1371,14 @@ def main():
             verbose=not args.quiet,
             lang=args.lang,
             reporter=reporter,
+            auto_manage_report_case=not bool(args.file),
+            require_structured_finish_status=not bool(status_judge),
+            system_prompt=None,
         )
+        if external_judge_system_override:
+            agent_config.system_prompt = (
+                agent_config.system_prompt or ""
+            ) + external_judge_system_override
 
         my_rules = load_rules("rules")
 
@@ -1012,8 +1395,12 @@ def main():
     else:
         print("Phone Agent - AI-powered phone automation")
     print("=" * 50)
-    print(f"Model: {model_config.model_name}")
-    print(f"Base URL: {model_config.base_url}")
+    print(f"Vision Model: {model_config.model_name}")
+    print(f"Vision Base URL: {model_config.base_url}")
+    if status_judge:
+        print(f"Judge Model: {status_judge.config.model_name}")
+        print(f"Judge Base URL: {status_judge.config.base_url}")
+        print(f"Judge API Key Env: {status_judge.config.api_key_env}")
     print(f"Max Steps: {agent_config.max_steps}")
     print(f"Language: {agent_config.lang}")
     print(f"Device Type: {args.device_type.upper()}")
@@ -1068,25 +1455,206 @@ def main():
 
     if test_cases:
         total_tasks = len(test_cases)
-        for index, test_case in enumerate(test_cases, start=1):
-            task = test_case.task
-            case_label = test_case.case_id or f"Task {index}"
-            title = f" - {test_case.title}" if test_case.title else ""
-            rule_type = test_case.rule_type or "unknown"
-            priority = test_case.priority or "unknown"
-            module = test_case.module or "unknown"
-            print(
-                f"\nTask {index}/{total_tasks}: "
-                f"{case_label} [{rule_type}, {priority}, {module}]{title}\n"
-            )
-            print_test_case_heading(task)
-            reporter.start_case(task, index)
-            result = agent.run(task)
+        try:
+            for index, test_case in enumerate(test_cases, start=1):
+                task = test_case.task
+                case_label = test_case.case_id or f"Task {index}"
+                title = f" - {test_case.title}" if test_case.title else ""
+                rule_type = test_case.rule_type or "unknown"
+                priority = test_case.priority or "unknown"
+                module = test_case.module or "unknown"
+                print(
+                    f"\nTask {index}/{total_tasks}: "
+                    f"{case_label} [{rule_type}, {priority}, {module}]{title}\n"
+                )
+                print_test_case_heading(task)
+                if device_type == DeviceType.ADB:
+                    reset_android_wearfit_home(args.device_id, wait_seconds=8)
+
+                execution_steps = parse_execution_steps(task) if args.file else []
+                if execution_steps:
+                    reporter.start_case(task, index)
+                    reporter.set_test_steps(
+                        [
+                            {
+                                "index": step.index,
+                                "text": step.text,
+                                "target_state": step.target_state,
+                                "activity": step.activity,
+                            }
+                            for step in execution_steps
+                        ]
+                    )
+
+                    completed_summaries: list[str] = []
+                    case_results: list[str] = []
+                    step_statuses: list[str] = []
+                    terminal_status = "PASS"
+                    for step_position, execution_step in enumerate(
+                        execution_steps, start=1
+                    ):
+                        is_last_step = step_position == len(execution_steps)
+                        print(
+                            f"\nCase {index}/{total_tasks} Step "
+                            f"{execution_step.index}/{len(execution_steps)}: "
+                            f"{execution_step.text}"
+                        )
+                        reporter.begin_test_step(execution_step.index)
+                        step_task = build_step_task(
+                            test_case,
+                            execution_step,
+                            execution_steps,
+                            completed_summaries,
+                            external_status_judge=bool(status_judge),
+                        )
+                        result = agent.run(step_task)
+                        step_limit_reached = result.strip() == "Max steps reached"
+                        judge_raw = None
+                        judge_prompt_tokens = 0
+                        judge_completion_tokens = 0
+                        judge_total_tokens = 0
+                        if status_judge:
+                            operation_log = build_operation_log(
+                                reporter, execution_step.index
+                            )
+                            agent_text_log = build_agent_text_log(agent.context)
+                            try:
+                                judge_result = status_judge.judge(
+                                    case_id=test_case.case_id,
+                                    case_title=test_case.title,
+                                    step_index=execution_step.index,
+                                    step_text=execution_step.text,
+                                    target_state=execution_step.target_state,
+                                    expected_activity=execution_step.activity,
+                                    case_task=test_case.task,
+                                    all_steps_text=format_execution_steps(execution_steps),
+                                    previous_steps=completed_summaries,
+                                    agent_text_log=agent_text_log,
+                                    operation_log=operation_log,
+                                    model_result=result,
+                                    step_limit_reached=step_limit_reached,
+                                )
+                                step_status = judge_result.status
+                                result = judge_result.message
+                                judge_raw = judge_result.raw
+                                judge_prompt_tokens = judge_result.prompt_tokens
+                                judge_completion_tokens = judge_result.completion_tokens
+                                judge_total_tokens = judge_result.total_tokens
+                            except Exception as exc:
+                                step_status = "REVIEW"
+                                result = (
+                                    "STATUS: REVIEW\n"
+                                    f"REASON: 判定模型调用失败，需要人工复核：{exc}"
+                                )
+                                judge_raw = str(exc)
+                        else:
+                            if step_limit_reached:
+                                result = agent.request_finish_status_only(
+                                    execution_step.text,
+                                    execution_step.target_state,
+                                )
+                            step_status = classify_step_result(
+                                result, is_last_step=is_last_step
+                            )
+                        reporter.finish_test_step(
+                            execution_step.index,
+                            step_status,
+                            result,
+                            judge_raw=judge_raw,
+                            judge_prompt_tokens=judge_prompt_tokens,
+                            judge_completion_tokens=judge_completion_tokens,
+                            judge_total_tokens=judge_total_tokens,
+                        )
+                        step_statuses.append(step_status)
+                        summary = (
+                            f"{execution_step.index}. {step_status}: "
+                            f"{result[:220].replace(chr(10), ' ')}"
+                        )
+                        completed_summaries.append(summary)
+                        case_results.append(summary)
+                        token_text = (
+                            f" Judge Tokens: {judge_total_tokens} "
+                            f"(prompt={judge_prompt_tokens}, completion={judge_completion_tokens})"
+                            if status_judge
+                            else ""
+                        )
+                        print(f"Step Result: {step_status} - {result}{token_text}")
+                        agent.reset()
+
+                        if step_status in {"FAIL", "BLOCKED"}:
+                            terminal_status = step_status
+                            break
+
+                    final_result = "\n".join(case_results)
+                    if terminal_status == "PASS":
+                        executed_statuses = [
+                            status
+                            for status in step_statuses
+                            if status and status != "PENDING"
+                        ]
+                        last_status = (
+                            executed_statuses[-1] if executed_statuses else "PASS"
+                        )
+                        if last_status in {"PASS", "SKIPPED"}:
+                            terminal_status = "PASS"
+                        elif last_status == "BLOCKED":
+                            terminal_status = "BLOCKED"
+                        elif last_status in {"UNKNOWN", "STEP_LIMIT", "REVIEW"}:
+                            terminal_status = "REVIEW"
+                        else:
+                            terminal_status = "PASS"
+
+                    if terminal_status == "PASS":
+                        final_result = "所有测试步骤已按顺序执行完成。\n" + final_result
+                    elif terminal_status == "REVIEW":
+                        final_result = (
+                            "REVIEW: 存在未明确判定或达到单步步数上限的步骤。\n"
+                            + final_result
+                        )
+                    else:
+                        final_result = f"{terminal_status}: 测试步骤执行中断。\n" + final_result
+
+                    if reporter.current_case:
+                        reporter.finish_case(final_result)
+                    if status_judge and reporter.cases:
+                        usage = sum(
+                            step.judge_total_tokens
+                            for step in reporter.cases[-1].test_steps
+                        )
+                        prompt_usage = sum(
+                            step.judge_prompt_tokens
+                            for step in reporter.cases[-1].test_steps
+                        )
+                        completion_usage = sum(
+                            step.judge_completion_tokens
+                            for step in reporter.cases[-1].test_steps
+                        )
+                        print(
+                            f"Case Judge Tokens: {usage} "
+                            f"(prompt={prompt_usage}, completion={completion_usage})"
+                        )
+                    print(f"\nResult {index}/{total_tasks}: {final_result}")
+                else:
+                    reporter.start_case(task, index)
+                    result = agent.run(task)
+                    if reporter.current_case:
+                        reporter.finish_case(result)
+                    print(f"\nResult {index}/{total_tasks}: {result}")
+                    agent.reset()
+        except (Exception, KeyboardInterrupt) as exc:
             if reporter.current_case:
-                reporter.finish_case(result)
-            print(f"\nResult {index}/{total_tasks}: {result}")
-            agent.reset()
+                reporter.finish_case(
+                    f"REVIEW: Runner interrupted before normal completion.\n"
+                    f"{type(exc).__name__}: {exc}"
+                )
+            reporter.finish_run()
+            if status_judge:
+                print_judge_token_summary(reporter)
+            print(f"\nHTML report: {reporter.root_dir / 'index.html'}")
+            raise
         reporter.finish_run()
+        if status_judge:
+            print_judge_token_summary(reporter)
         print(f"\nSummary report: {reporter.root_dir / 'summary.md'}")
         print(f"HTML report: {reporter.root_dir / 'index.html'}")
     else:

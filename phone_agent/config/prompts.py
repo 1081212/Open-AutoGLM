@@ -51,6 +51,10 @@ SYSTEM_PROMPT = (
     等待页面加载，x为需要等待多少秒。
 - finish(message="xxx")  
     finish是结束任务的操作，表示准确完整完成任务，message是终止信息。 
+    如果当前任务是测试步骤，finish 的 message 第一行必须是结构化状态：
+    finish(message="STATUS: PASS\nREASON: 当前步骤目标已达成，证据是当前页面显示目标内容。")
+    STATUS 只能选择 PASS、SKIPPED、BLOCKED、FAIL、REVIEW 五者之一，必须写实际单词，禁止输出尖括号或占位符。
+    禁止只输出 finish(message="测试步骤已完成...") 这种没有 STATUS 的结束信息。
 
 必须遵循的规则：
 1. 在执行任何操作前，先检查当前app是否是目标app，如果不是，先执行 Launch。

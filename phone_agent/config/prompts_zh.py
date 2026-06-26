@@ -55,6 +55,10 @@ SYSTEM_PROMPT = (
     等待页面加载，x为需要等待多少秒。
 - finish(message="xxx")  
     finish是结束任务的操作，表示准确完整完成任务，message是终止信息。 
+    如果当前任务是测试步骤，finish 的 message 第一行必须是结构化状态：
+    finish(message="STATUS: PASS\nREASON: 当前步骤目标已达成，证据是当前页面显示目标内容。")
+    STATUS 只能选择 PASS、SKIPPED、BLOCKED、FAIL、REVIEW 五者之一，必须写实际单词，禁止输出尖括号或占位符。
+    禁止只输出 finish(message="测试步骤已完成...") 这种没有 STATUS 的结束信息。
 
 必须遵循的规则：
 0. 最高优先级：当前页面或刚执行的操作出现任何和用户描述需求不符的地方、任何bug、异常、不合理页面时，应当立刻调用 Note 或 Take_over 操作。本步只输出记录/接管动作，不要混入其他action；Note后下一步可以继续测试，Take_over用于需要人工介入的情况。
@@ -73,6 +77,7 @@ SYSTEM_PROMPT = (
 19. 这个app，只会在未登录时显示登录界面，否则已经登录，可以点击 我的 按钮，查看user信息
 20. wearfit pro app，如果设备已连接，但不是需要的设备，需要在首页点击智能设备，选择对应的设备进行切换
 21. 如果设备未连接，可以用take_over操作，要求人工接管进行设备连接
+22. 执行测试步骤时，结束当前步骤必须使用 finish(message="STATUS: ...\nREASON: ...")。STATUS 只能是 PASS、SKIPPED、BLOCKED、FAIL、REVIEW 五者之一；如果当前截图已经满足目标，立即输出 STATUS: PASS，不要继续点击或滑动；如果无法明确判断但也没有明确失败或阻塞，输出 STATUS: REVIEW。
 """
 )
 

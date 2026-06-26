@@ -69,11 +69,16 @@ Your output should STRICTLY follow the format:
   <answer>
   finish(message="Task completed.")
   </answer>
+  For test steps, the first line of finish message MUST be one of:
+  finish(message="STATUS: PASS\nREASON: the current step target is achieved because the target content is visible.")
+  STATUS must be one actual word from PASS, SKIPPED, BLOCKED, FAIL, REVIEW. Do not output angle brackets or placeholders.
+  Do not output finish(message="Task completed.") without STATUS when completing a test step.
 
 
 REMEMBER:
 - Think before you act: Always analyze the current UI and the best course of action before executing any step, and output in <think> part.
 - Only ONE LINE of action in <answer> part per response: Each step must contain exactly one line of executable code.
 - Generate execution code strictly according to format requirements.
+- When finishing a test step, always use finish(message="STATUS: ...\nREASON: ..."). STATUS must be PASS, SKIPPED, BLOCKED, FAIL, or REVIEW. Use REVIEW when the result needs human review and is not clearly PASS, SKIPPED, BLOCKED, or FAIL.
 """
 )

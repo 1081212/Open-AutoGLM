@@ -14,6 +14,12 @@ from phone_agent.device_factory import DeviceType
 from phone_agent.device_factory import get_device_factory
 from phone_agent.model import ModelClient, ModelConfig
 from phone_agent.model.client import MessageBuilder
+from phone_agent.status_utils import (
+    coerce_finish_to_review,
+    finish_message_has_status,
+    status_formatter_system_prompt,
+    status_formatter_user_prompt,
+)
 
 ISSUE_KEYWORDS = (
     "bug",
@@ -42,6 +48,8 @@ class AgentConfig:
     system_prompt: str | None = None
     verbose: bool = True
     reporter: Any | None = None
+    auto_manage_report_case: bool = True
+    require_structured_finish_status: bool = True
 
     def __post_init__(self):
         if self.system_prompt is None:
@@ -153,6 +161,7 @@ class PhoneAgent:
         self.custom_rules = custom_rules or []
         self._rule_fire_counts: dict[str, int] = {}
         self._remind_task = False
+        self._finish_status_repair_count = 0
 
     def add_rule(self, rule: CustomRule) -> None:
         """运行时注册一条自定义规则。"""
@@ -173,7 +182,12 @@ class PhoneAgent:
         self._current_task = task
         self._rule_fire_counts = {}
         self._remind_task = False
-        if self.agent_config.reporter and not self.agent_config.reporter.current_case:
+        self._finish_status_repair_count = 0
+        if (
+            self.agent_config.auto_manage_report_case
+            and self.agent_config.reporter
+            and not self.agent_config.reporter.current_case
+        ):
             self.agent_config.reporter.start_case(
                 task, len(self.agent_config.reporter.cases) + 1
             )
@@ -221,6 +235,16 @@ class PhoneAgent:
 
         return self._execute_step(task, is_first)
 
+    def request_finish_status_only(
+        self, step_text: str, target_state: str | None = None
+    ) -> str:
+        """Ask the model to close the current step with finish STATUS only."""
+        return self._repair_finish_status_isolated(
+            "当前步骤达到操作上限，主执行 agent 未能在步数限制内完成结构化 finish。",
+            step_text,
+            target_state,
+        )
+
     def reset(self) -> None:
         """Reset the agent state for a new task."""
         self._context = []
@@ -228,6 +252,7 @@ class PhoneAgent:
         self._current_task = ""
         self._rule_fire_counts = {}
         self._remind_task = False
+        self._finish_status_repair_count = 0
 
     def _execute_step(
         self, user_prompt: str | None = None, is_first: bool = False
@@ -319,6 +344,23 @@ class PhoneAgent:
             action = finish(message=response.action)
 
         action_response = response.action
+        if (
+            self.agent_config.require_structured_finish_status
+            and
+            action.get("_metadata") == "finish"
+            and not finish_message_has_status(action)
+            and self._finish_status_repair_count < 2
+        ):
+            original_finish_action = action
+            self._context[-1] = MessageBuilder.remove_images_from_message(
+                self._context[-1]
+            )
+            repaired_message = self._repair_finish_status_isolated(
+                str(original_finish_action.get("message") or ""),
+            )
+            action = finish(message=repaired_message)
+            action_response = self._format_action_for_context(action)
+
         # action = self._convert_bug_finish_to_note(action)
         if action.get("action") == "Note" and action_response != response.action:
             action_response = self._format_action_for_context(action)
@@ -553,6 +595,8 @@ class PhoneAgent:
         self, message: str, max_steps_reached: bool = False
     ) -> None:
         if self.agent_config.reporter and self.agent_config.reporter.current_case:
+            if not self.agent_config.auto_manage_report_case:
+                return
             status = self.agent_config.reporter.finish_case(
                 message, max_steps_reached=max_steps_reached
             )
@@ -589,6 +633,42 @@ class PhoneAgent:
             return f"finish(message={json.dumps(action.get('message', ''), ensure_ascii=False)})"
 
         return str(action)
+
+    def _repair_finish_status_isolated(
+        self,
+        original_message: str,
+        step_text: str | None = None,
+        target_state: str | None = None,
+    ) -> str:
+        """Repair finish STATUS using an isolated status-only model context."""
+        fallback_action = coerce_finish_to_review(
+            {"_metadata": "finish", "message": original_message}
+        )
+        fallback_message = str(fallback_action.get("message") or "")
+        for attempt in range(1, 3):
+            self._finish_status_repair_count += 1
+            messages = [
+                MessageBuilder.create_system_message(status_formatter_system_prompt()),
+                MessageBuilder.create_user_message(
+                    status_formatter_user_prompt(
+                        original_message,
+                        attempt=attempt,
+                        max_attempts=2,
+                        step_text=step_text,
+                        target_state=target_state,
+                    )
+                ),
+            ]
+            try:
+                response = self.model_client.request(messages)
+                action = parse_action(response.action)
+            except Exception:
+                if self.agent_config.verbose:
+                    traceback.print_exc()
+                continue
+            if action.get("_metadata") == "finish" and finish_message_has_status(action):
+                return str(action.get("message") or fallback_message)
+        return fallback_message
 
     @property
     def context(self) -> list[dict[str, Any]]:

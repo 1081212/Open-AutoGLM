@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,7 @@ FAIL_KEYWORDS = (
 )
 
 BLOCKED_KEYWORDS = (
+    "blocked",
     "max steps reached",
     "model error",
     "user interaction required",
@@ -57,11 +59,28 @@ class StepArtifact:
     ui_xml: str | None
     current_app: str
     current_activity: str | None
+    test_step_index: int | None = None
     action: dict[str, Any] | None = None
     action_success: bool | None = None
     action_message: str | None = None
     sensitive_screenshot: bool = False
     ui_texts: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TestStepArtifact:
+    index: int
+    text: str
+    target_state: str | None = None
+    activity: str | None = None
+    status: str = "PENDING"
+    result_message: str | None = None
+    judge_raw: str | None = None
+    judge_prompt_tokens: int = 0
+    judge_completion_tokens: int = 0
+    judge_total_tokens: int = 0
+    started_at: str | None = None
+    finished_at: str | None = None
 
 
 @dataclass
@@ -74,6 +93,7 @@ class CaseReport:
     started_at: str = field(default_factory=_now)
     finished_at: str | None = None
     artifacts_dir: str = ""
+    test_steps: list[TestStepArtifact] = field(default_factory=list)
     steps: list[StepArtifact] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
 
@@ -126,6 +146,8 @@ class TestRunReporter:
         self.wda_url = wda_url or os.getenv("PHONE_AGENT_WDA_URL", "http://localhost:8100")
         self.cases: list[CaseReport] = []
         self.current_case: CaseReport | None = None
+        self.current_test_step_index: int | None = None
+        self._case_step_counter = 0
         self.run_started_at = _now()
         self.environment: dict[str, Any] = self._collect_environment()
 
@@ -143,6 +165,8 @@ class TestRunReporter:
         )
         self.cases.append(case)
         self.current_case = case
+        self.current_test_step_index = None
+        self._case_step_counter = 0
         package_name = extract_package_name(task)
         if package_name:
             self.environment.setdefault("apps", {})[package_name] = (
@@ -150,6 +174,59 @@ class TestRunReporter:
             )
         self._write_run_metadata()
         return case
+
+    def set_test_steps(self, steps: list[dict[str, Any]]) -> None:
+        """Register parsed Markdown test steps for the current case."""
+        if not self.current_case:
+            return
+        self.current_case.test_steps = [
+            TestStepArtifact(
+                index=int(step["index"]),
+                text=str(step["text"]),
+                target_state=step.get("target_state"),
+                activity=step.get("activity"),
+            )
+            for step in steps
+        ]
+        self._write_case_json(self.current_case)
+
+    def begin_test_step(self, index: int) -> None:
+        """Mark the current Markdown test step before model actions are recorded."""
+        self.current_test_step_index = index
+        if not self.current_case:
+            return
+        for test_step in self.current_case.test_steps:
+            if test_step.index == index:
+                test_step.status = "RUNNING"
+                test_step.started_at = test_step.started_at or _now()
+                break
+        self._write_case_json(self.current_case)
+
+    def finish_test_step(
+        self,
+        index: int,
+        status: str,
+        result_message: str,
+        judge_raw: str | None = None,
+        judge_prompt_tokens: int = 0,
+        judge_completion_tokens: int = 0,
+        judge_total_tokens: int = 0,
+    ) -> None:
+        """Finish one Markdown test step while keeping the case open."""
+        if not self.current_case:
+            return
+        for test_step in self.current_case.test_steps:
+            if test_step.index == index:
+                test_step.status = status
+                test_step.result_message = result_message
+                test_step.judge_raw = judge_raw
+                test_step.judge_prompt_tokens = judge_prompt_tokens
+                test_step.judge_completion_tokens = judge_completion_tokens
+                test_step.judge_total_tokens = judge_total_tokens
+                test_step.finished_at = _now()
+                break
+        self.current_test_step_index = None
+        self._write_case_json(self.current_case)
 
     def save_step(
         self,
@@ -164,7 +241,9 @@ class TestRunReporter:
             return None
 
         case_dir = Path(self.current_case.artifacts_dir)
-        screenshot_rel = f"screenshots/step_{step:03d}.png"
+        self._case_step_counter += 1
+        artifact_step = self._case_step_counter
+        screenshot_rel = f"screenshots/step_{artifact_step:03d}.png"
         screenshot_path = case_dir / screenshot_rel
         try:
             screenshot_path.write_bytes(base64.b64decode(screenshot_base64))
@@ -175,16 +254,17 @@ class TestRunReporter:
         current_activity = self._get_current_activity()
         xml = self._dump_ui_xml()
         if xml:
-            ui_rel = f"ui/step_{step:03d}.xml"
+            ui_rel = f"ui/step_{artifact_step:03d}.xml"
             (case_dir / ui_rel).write_text(xml, encoding="utf-8")
         ui_texts = _extract_ui_texts(xml or "")
 
         artifact = StepArtifact(
-            step=step,
+            step=artifact_step,
             screenshot=screenshot_rel,
             ui_xml=ui_rel,
             current_app=current_app,
             current_activity=current_activity,
+            test_step_index=self.current_test_step_index,
             sensitive_screenshot=sensitive_screenshot,
             ui_texts=ui_texts,
         )
@@ -202,11 +282,10 @@ class TestRunReporter:
         if not self.current_case or not self.current_case.steps:
             return
         artifact = self.current_case.steps[-1]
-        if artifact.step == step:
-            artifact.action = action
-            artifact.action_success = success
-            artifact.action_message = message
-        if message and _contains_any(message, FAIL_KEYWORDS + BLOCKED_KEYWORDS):
+        artifact.action = action
+        artifact.action_success = success
+        artifact.action_message = message
+        if success is False and message:
             self.current_case.issues.append(message)
         self._write_case_json(self.current_case)
 
@@ -233,14 +312,32 @@ class TestRunReporter:
     def _classify_status(
         self, case: CaseReport, result_message: str, max_steps_reached: bool
     ) -> str:
-        text = " ".join([result_message or "", *case.issues]).lower()
-        if max_steps_reached or _contains_any(text, BLOCKED_KEYWORDS):
+        if max_steps_reached:
             return "BLOCKED"
-        if _contains_any(text, FAIL_KEYWORDS):
-            return "FAIL"
         failed_actions = [s for s in case.steps if s.action_success is False]
         if failed_actions:
             return "FAIL"
+        step_statuses = [s.status for s in case.test_steps]
+        if any(status == "FAIL" for status in step_statuses):
+            return "FAIL"
+
+        executed_statuses = [
+            status for status in step_statuses if status and status != "PENDING"
+        ]
+        if executed_statuses:
+            last_status = executed_statuses[-1]
+            if last_status in {"PASS", "SKIPPED"}:
+                return "PASS"
+            if last_status == "BLOCKED":
+                return "BLOCKED"
+            if last_status in {"UNKNOWN", "STEP_LIMIT", "REVIEW"}:
+                return "REVIEW"
+
+        if any(status in {"UNKNOWN", "STEP_LIMIT", "REVIEW"} for status in step_statuses):
+            return "REVIEW"
+        explicit = _parse_explicit_status(result_message or "")
+        if explicit in {"FAIL", "BLOCKED", "REVIEW"}:
+            return explicit
         return "PASS"
 
     def _collect_environment(self) -> dict[str, Any]:
@@ -410,6 +507,18 @@ class TestRunReporter:
             lines.extend(["## Issues", ""])
             lines.extend(f"- {issue}" for issue in case.issues)
             lines.append("")
+        if case.test_steps:
+            usage = _judge_usage_for_case(case)
+            lines.extend(
+                [
+                    "## Judge Token Usage",
+                    "",
+                    f"- Prompt tokens: {usage['prompt']}",
+                    f"- Completion tokens: {usage['completion']}",
+                    f"- Total tokens: {usage['total']}",
+                    "",
+                ]
+            )
         lines.extend(["## Steps", ""])
         for step in case.steps:
             action = step.action or {}
@@ -444,20 +553,33 @@ class TestRunReporter:
                     f"- {package}: {info.get('version_name')} "
                     f"({info.get('version_code')})"
                 )
+        usage = _judge_usage_for_run(self.cases)
+        lines.extend(
+            [
+                "",
+                "## Judge Token Usage",
+                "",
+                f"- Prompt tokens: {usage['prompt']}",
+                f"- Completion tokens: {usage['completion']}",
+                f"- Total tokens: {usage['total']}",
+            ]
+        )
         lines.extend(["", "## Cases", ""])
-        lines.append("| Case | Status | Report | Last Screenshot |")
-        lines.append("| --- | --- | --- | --- |")
+        lines.append("| Case | Status | Judge Tokens | Report | Last Screenshot |")
+        lines.append("| --- | --- | ---: | --- | --- |")
         for case in self.cases:
             last = case.steps[-1] if case.steps else None
             screenshot = f"{case.case_id}/{last.screenshot}" if last and last.screenshot else ""
+            case_usage = _judge_usage_for_case(case)
             lines.append(
-                f"| {case.case_id} | {case.status} | {case.case_id}/report.md | {screenshot} |"
+                f"| {case.case_id} | {case.status} | {case_usage['total']} | {case.case_id}/report.md | {screenshot} |"
             )
         summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _write_case_html(self, case: CaseReport) -> None:
         path = Path(case.artifacts_dir) / "report.html"
         meta = _case_metadata(case)
+        judge_usage = _judge_usage_for_case(case)
         lines = [
             "<!doctype html>",
             '<html lang="zh-CN">',
@@ -486,7 +608,16 @@ class TestRunReporter:
             _metric_card("开始时间", case.started_at),
             _metric_card("结束时间", case.finished_at or ""),
             _metric_card("执行时长", _case_duration(case)),
-            _metric_card("步骤数", str(len(case.steps))),
+            _metric_card("测试步骤数", str(len(case.test_steps) or len(case.steps))),
+            _metric_card("模型动作数", str(len(case.steps))),
+            _metric_card(
+                "判定模型 Tokens",
+                _format_token_usage(
+                    judge_usage["prompt"],
+                    judge_usage["completion"],
+                    judge_usage["total"],
+                ),
+            ),
             "</section>",
             '<section class="panel task-panel">',
             "<h2>测试任务</h2>",
@@ -512,8 +643,17 @@ class TestRunReporter:
             )
 
         lines.extend(['<section class="panel">', "<h2>步骤详情</h2>"])
-        for step in case.steps:
-            lines.append(_render_step_html(case, step))
+        if case.test_steps:
+            for test_step in case.test_steps:
+                model_steps = [
+                    step
+                    for step in case.steps
+                    if step.test_step_index == test_step.index
+                ]
+                lines.append(_render_test_step_html(case, test_step, model_steps))
+        else:
+            for step in case.steps:
+                lines.append(_render_step_html(case, step))
         lines.extend(["</section>", "</main>", "</body>", "</html>"])
         lines.insert(-2, f"<script>{_report_js()}</script>")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -536,14 +676,52 @@ def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
     return any(keyword.lower() in lower_text for keyword in keywords)
 
 
+def _parse_explicit_status(text: str) -> str | None:
+    match = re.search(
+        r"^\s*(?:STATUS|状态)\s*[:：]\s*(PASS|SKIPPED|BLOCKED|FAIL|REVIEW)\b",
+        text or "",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if match:
+        return match.group(1).upper()
+    match = re.search(r"^\s*(PASS|SKIPPED|BLOCKED|FAIL|REVIEW)\s*[:：]", text or "")
+    return match.group(1).upper() if match else None
+
+
 def _search_line_value(output: str, pattern: str) -> str | None:
     match = re.search(pattern, output)
     return match.group(1) if match else None
 
 
 def _extract_ui_texts(xml: str) -> list[str]:
+    if not xml.strip():
+        return []
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return _extract_ui_texts_fallback(xml)
+
     values: list[str] = []
-    for attr in ("text", "content-desc", "resource-id", "name", "label", "value"):
+    root_bounds = _parse_bounds(root.attrib.get("bounds", ""))
+    screen_width = root_bounds[2] if root_bounds else None
+    screen_height = root_bounds[3] if root_bounds else None
+
+    for node in root.iter():
+        if not _node_is_visible(node, screen_width, screen_height):
+            continue
+        for attr in ("text", "content-desc", "name", "label", "value"):
+            value = (node.attrib.get(attr) or "").strip()
+            value = value.strip()
+            if value and value not in values:
+                values.append(value)
+            if len(values) >= 80:
+                return values
+    return values
+
+
+def _extract_ui_texts_fallback(xml: str) -> list[str]:
+    values: list[str] = []
+    for attr in ("text", "content-desc", "name", "label", "value"):
         for value in re.findall(fr'{attr}="([^"]+)"', xml):
             value = value.strip()
             if value and value not in values:
@@ -551,6 +729,29 @@ def _extract_ui_texts(xml: str) -> list[str]:
             if len(values) >= 80:
                 return values
     return values
+
+
+def _parse_bounds(value: str) -> tuple[int, int, int, int] | None:
+    match = re.match(r"\[(\-?\d+),(\-?\d+)\]\[(\-?\d+),(\-?\d+)\]", value or "")
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _node_is_visible(
+    node: ET.Element, screen_width: int | None, screen_height: int | None
+) -> bool:
+    bounds = _parse_bounds(node.attrib.get("bounds", ""))
+    if not bounds:
+        return True
+    left, top, right, bottom = bounds
+    if right <= left or bottom <= top:
+        return False
+    if screen_width is not None and (right <= 0 or left >= screen_width):
+        return False
+    if screen_height is not None and (bottom <= 0 or top >= screen_height):
+        return False
+    return True
 
 
 def _h(value: str) -> str:
@@ -567,6 +768,31 @@ def _metric_card(label: str, value: str, tone: str = "") -> str:
     )
 
 
+def _judge_usage_for_case(case: CaseReport) -> dict[str, int]:
+    prompt = sum(step.judge_prompt_tokens for step in case.test_steps)
+    completion = sum(step.judge_completion_tokens for step in case.test_steps)
+    total = sum(step.judge_total_tokens for step in case.test_steps)
+    return {"prompt": prompt, "completion": completion, "total": total}
+
+
+def _judge_usage_for_run(cases: list[CaseReport]) -> dict[str, int]:
+    prompt = 0
+    completion = 0
+    total = 0
+    for case in cases:
+        usage = _judge_usage_for_case(case)
+        prompt += usage["prompt"]
+        completion += usage["completion"]
+        total += usage["total"]
+    return {"prompt": prompt, "completion": completion, "total": total}
+
+
+def _format_token_usage(prompt: int, completion: int, total: int) -> str:
+    if not (prompt or completion or total):
+        return "-"
+    return f"{total} total / {prompt} prompt / {completion} completion"
+
+
 def _build_summary_html(
     root_dir: Path,
     run_started_at: str,
@@ -581,6 +807,7 @@ def _build_summary_html(
     non_pass_cases = [case for case in cases if case.status != "PASS"]
     pass_rate = round((pass_count / total) * 100) if total else 0
     duration = _run_duration(cases)
+    judge_usage = _judge_usage_for_run(cases)
 
     lines = [
         "<!doctype html>",
@@ -613,6 +840,7 @@ def _build_summary_html(
         _summary_tile("Blocked", str(blocked_count), "环境或流程阻塞", "blocked"),
         _summary_tile("Other", str(other_count), "未完成/未知", "other"),
         _summary_tile("Duration", duration, "首尾用例时间跨度", "duration"),
+        _summary_tile("Judge Tokens", str(judge_usage["total"]), "文本判定模型总消耗", "other"),
         "</section>",
         '<section class="panel split-panel">',
         '<div><h2>Status Overview</h2><p class="subtle">按最终状态聚合，便于先判断本轮执行质量。</p></div>',
@@ -626,11 +854,12 @@ def _build_summary_html(
         report_link = f"{case.case_id}/report.html"
         issue_step = _find_issue_step(case)
         reason = _issue_reason(case, issue_step) if case.status != "PASS" else case.result_message or "Passed"
+        case_usage = _judge_usage_for_case(case)
         lines.append(
             '<a class="case-row" href="' + _h(report_link) + '">'
             f'<span class="status-dot {case.status.lower()}"></span>'
             f'<span class="case-name"><strong>{_h(case.case_id)}</strong><em>{_h(_display_title(case))}</em></span>'
-            f'<span class="case-steps">{len(case.steps)} steps · {_h(_case_duration(case))}</span>'
+            f'<span class="case-steps">{_case_step_count(case)} · {_h(_case_duration(case))} · Judge {case_usage["total"]}</span>'
             f'<span class="case-reason">{_h(_shorten(reason, 110))}</span>'
             f'<span class="status {case.status.lower()}">{_h(case.status)}</span>'
             "</a>"
@@ -737,6 +966,49 @@ def _render_step_html(case: CaseReport, step: StepArtifact) -> str:
     )
 
 
+def _render_test_step_html(
+    case: CaseReport, test_step: TestStepArtifact, model_steps: list[StepArtifact]
+) -> str:
+    status_class = test_step.status.lower()
+    token_usage = _format_token_usage(
+        test_step.judge_prompt_tokens,
+        test_step.judge_completion_tokens,
+        test_step.judge_total_tokens,
+    )
+    model_html = []
+    if model_steps:
+        for step in model_steps:
+            model_html.append(_render_step_html(case, step))
+    else:
+        model_html.append('<div class="empty-state"><strong>无模型动作记录</strong></div>')
+
+    return "\n".join(
+        [
+            '<article class="test-step-card">',
+            '<div class="test-step-head">',
+            '<div>',
+            f"<h3>测试步骤 {test_step.index}</h3>",
+            f"<p>{_h(test_step.text)}</p>",
+            "</div>",
+            f'<span class="status {status_class}">{_h(test_step.status)}</span>',
+            "</div>",
+            '<dl class="step-meta test-step-meta">',
+            f"<dt>目标状态</dt><dd>{_h(test_step.target_state or '')}</dd>",
+            f"<dt>期望 Activity</dt><dd>{_h(test_step.activity or '')}</dd>",
+            f"<dt>执行时长</dt><dd>{_h(_test_step_duration(test_step))}</dd>",
+            f"<dt>判定 Tokens</dt><dd>{_h(token_usage)}</dd>",
+            f"<dt>结果</dt><dd>{_h(test_step.result_message or '')}</dd>",
+            f"<dt>判定原文</dt><dd>{_h(test_step.judge_raw or '')}</dd>",
+            "</dl>",
+            "<details open>",
+            f"<summary>模型实现详情（{len(model_steps)} 个动作）</summary>",
+            *model_html,
+            "</details>",
+            "</article>",
+        ]
+    )
+
+
 def _render_issue_case_html(case: CaseReport) -> str:
     issue_step = _find_issue_step(case)
     screenshot = ""
@@ -783,20 +1055,31 @@ def _find_issue_step(case: CaseReport) -> StepArtifact | None:
     for step in case.steps:
         if step.action_success is False:
             return step
-    for step in case.steps:
-        if step.action_message and _contains_any(
-            step.action_message, FAIL_KEYWORDS + BLOCKED_KEYWORDS
-        ):
-            return step
+    issue_test_step = _find_issue_test_step(case)
+    if issue_test_step:
+        for step in case.steps:
+            if step.test_step_index == issue_test_step.index:
+                return step
     return case.steps[-1] if case.steps else None
 
 
 def _issue_reason(case: CaseReport, step: StepArtifact | None) -> str:
+    issue_test_step = _find_issue_test_step(case)
+    if issue_test_step and issue_test_step.result_message:
+        return issue_test_step.result_message
     if step and step.action_message:
         return step.action_message
     if case.issues:
         return case.issues[-1]
     return case.result_message or ""
+
+
+def _find_issue_test_step(case: CaseReport) -> TestStepArtifact | None:
+    for status in ("FAIL", "BLOCKED", "UNKNOWN", "STEP_LIMIT", "REVIEW"):
+        for step in case.test_steps:
+            if step.status == status:
+                return step
+    return None
 
 
 def _case_metadata(case: CaseReport) -> dict[str, str | None]:
@@ -830,6 +1113,27 @@ def _case_duration(case: CaseReport) -> str:
     if minutes:
         return f"{minutes}m {sec}s"
     return f"{sec}s"
+
+
+def _test_step_duration(step: TestStepArtifact) -> str:
+    if not step.started_at or not step.finished_at:
+        return "-"
+    try:
+        start = datetime.fromisoformat(step.started_at)
+        end = datetime.fromisoformat(step.finished_at)
+        seconds = max(0, int((end - start).total_seconds()))
+    except ValueError:
+        return "-"
+    minutes, sec = divmod(seconds, 60)
+    if minutes:
+        return f"{minutes}m {sec}s"
+    return f"{sec}s"
+
+
+def _case_step_count(case: CaseReport) -> str:
+    if case.test_steps:
+        return f"{len(case.test_steps)} test steps / {len(case.steps)} actions"
+    return f"{len(case.steps)} steps"
 
 
 def _render_result_message(message: str) -> str:
@@ -997,6 +1301,7 @@ def _report_css() -> str:
   --pass: #16a34a;
   --fail: #dc2626;
   --blocked: #d97706;
+  --review: #2563eb;
   --other: #64748b;
   --link: #2563eb;
   --shadow: 0 18px 45px rgba(15, 23, 42, .08);
@@ -1264,8 +1569,12 @@ p { margin: 8px 0; }
   font-size: 12px;
 }
 .status.pass { background: var(--pass); }
+.status.skipped { background: var(--pass); }
 .status.fail { background: var(--fail); }
 .status.blocked { background: var(--blocked); }
+.status.review,
+.status.unknown,
+.status.step_limit { background: var(--review); }
 .status.running { background: var(--other); }
 .case-list { display: grid; gap: 8px; }
 .case-row {
@@ -1292,6 +1601,9 @@ p { margin: 8px 0; }
 .status-dot.pass { background: var(--pass); }
 .status-dot.fail { background: var(--fail); }
 .status-dot.blocked { background: var(--blocked); }
+.status-dot.review,
+.status-dot.unknown,
+.status-dot.step_limit { background: var(--review); }
 .status-dot.running { background: var(--other); }
 .case-name strong,
 .case-name em {
@@ -1446,6 +1758,36 @@ pre {
   align-items: center;
   margin-top: 4px;
   font-weight: 700;
+}
+.test-step-card {
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 16px;
+  margin-bottom: 18px;
+}
+.test-step-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+.test-step-head h3 {
+  margin: 0 0 6px;
+}
+.test-step-head p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.6;
+}
+.test-step-card details {
+  margin-top: 12px;
+}
+.test-step-card summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 700;
+  margin-bottom: 10px;
 }
 .step-card {
   border: 1px solid var(--line);

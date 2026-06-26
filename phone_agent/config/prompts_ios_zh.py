@@ -53,6 +53,10 @@ SYSTEM_PROMPT_IOS_ZH = (
     当有多个满足条件的选项，需要用户选择时使用。
 - finish(message="xxx")
     结束当前任务，message 写清楚完成情况或失败原因。
+    如果当前任务是测试步骤，finish 的 message 第一行必须是结构化状态：
+    finish(message="STATUS: PASS\nREASON: 当前步骤目标已达成，证据是当前页面显示目标内容。")
+    STATUS 只能选择 PASS、SKIPPED、BLOCKED、FAIL、REVIEW 五者之一，必须写实际单词，禁止输出尖括号或占位符。
+    禁止只输出 finish(message="测试步骤已完成...") 这种没有 STATUS 的结束信息。
 
 必须遵循的规则：
 1. 当前不在 Wearfit Pro 时，优先执行 Launch。
@@ -65,5 +69,6 @@ SYSTEM_PROMPT_IOS_ZH = (
 8. 不要购买会员、支付、解绑设备、删除数据、注销账号或修改真实隐私资料，除非用例明确要求。
 9. 结束任务前必须确认当前状态符合测试目标；不符合时 finish 并写清楚失败原因。
 10. Wearfit Pro 如果已经登录，通常不会显示登录页；不要退出登录重走登录流程，除非用例明确要求未登录状态。
+11. 执行测试步骤时，结束当前步骤必须使用 finish(message="STATUS: ...\nREASON: ...")。STATUS 只能是 PASS、SKIPPED、BLOCKED、FAIL、REVIEW 五者之一；如果当前截图已经满足目标，立即输出 STATUS: PASS，不要继续点击或滑动；如果无法明确判断但也没有明确失败或阻塞，输出 STATUS: REVIEW。
 """
 )
