@@ -66,3 +66,7 @@ app_package_name.py
 cloud-phone-test
 test_artifacts
 ADBKeyboard.apk
+gitlab_artifacts
+scripts/code.sh
+scripts/download_gitlab_job_artifacts.py
+scripts/gitlab_pipeline_trigger.py

@@ -882,7 +882,7 @@ def _build_summary_html(
         '<main class="shell">',
         '<aside class="sidebar">',
         '<div class="brand"><span class="brand-mark"></span><div><strong>Test Report</strong><small>自动化测试报告</small></div></div>',
-        '<nav class="side-nav"><a href="#overview">总览</a><a href="#cases">全部用例</a><a href="#defects">非 PASS 用例</a><a href="#environment">环境信息</a></nav>',
+        '<nav class="side-nav"><a href="#overview">总览</a><a href="#tokens">Token 成本</a><a href="#cases">全部用例</a><a href="#defects">非 PASS 用例</a><a href="#environment">环境信息</a></nav>',
         '<div class="side-foot">生成时间<br>' + _h(run_started_at) + "</div>",
         "</aside>",
         '<section class="content">',
@@ -903,6 +903,7 @@ def _build_summary_html(
         _summary_tile("Vision Tokens", str(vision_usage["total"]), "视觉执行模型总消耗", "other"),
         _summary_tile("Judge Tokens", str(judge_usage["total"]), "文本判定模型总消耗", "other"),
         "</section>",
+        _token_cost_panel(vision_usage, judge_usage),
         '<section class="panel split-panel">',
         '<div><h2>Status Overview</h2><p class="subtle">按最终状态聚合，便于先判断本轮执行质量。</p></div>',
         _status_bar(pass_count, fail_count, blocked_count, other_count),
@@ -977,6 +978,78 @@ def _summary_tile(label: str, value: str, note: str, tone: str) -> str:
         f"<strong>{_h(value)}</strong>"
         f"<em>{_h(note)}</em>"
         "</article>"
+    )
+
+
+def _token_cost_panel(
+    vision_usage: dict[str, int],
+    judge_usage: dict[str, int],
+) -> str:
+    rows = [
+        (
+            "GLM 视觉执行模型",
+            "执行点击、滑动、输入等手机操作",
+            vision_usage,
+            0.0,
+            0.0,
+        ),
+        (
+            "Judge 文本判定模型",
+            "判定每个测试步骤 PASS / FAIL / BLOCKED / REVIEW",
+            judge_usage,
+            0.8,
+            2.0,
+        ),
+    ]
+    body = []
+    for index, (name, note, usage, input_price, output_price) in enumerate(rows):
+        cached = usage.get("cached", 0)
+        body.append(
+            '<tr class="token-row" '
+            f'data-prompt="{usage["prompt"]}" '
+            f'data-completion="{usage["completion"]}" '
+            f'data-total="{usage["total"]}">'
+            f'<td><strong>{_h(name)}</strong><span>{_h(note)}</span></td>'
+            f'<td>{usage["prompt"]:,}</td>'
+            f'<td>{usage["completion"]:,}</td>'
+            f'<td>{cached:,}</td>'
+            f'<td><strong>{usage["total"]:,}</strong></td>'
+            '<td>'
+            f'<input class="price-input token-input-price" type="number" min="0" step="0.01" value="{input_price:g}" aria-label="{_h(name)} 输入单价">'
+            '</td>'
+            '<td>'
+            f'<input class="price-input token-output-price" type="number" min="0" step="0.01" value="{output_price:g}" aria-label="{_h(name)} 输出单价">'
+            '</td>'
+            f'<td><strong class="token-cost" data-cost-index="{index}">¥0.0000</strong></td>'
+            "</tr>"
+        )
+    return "\n".join(
+        [
+            '<section id="tokens" class="panel token-panel">',
+            '<div class="section-head">',
+            "<div>",
+            "<h2>Token 与成本</h2>",
+            '<p class="subtle">单价单位为元 / 百万 token，可直接修改后自动重算。本地或未公开价格的模型默认按 0 计算。</p>',
+            "</div>",
+            '<div class="token-total-cost"><span>预估总成本</span><strong id="token-total-cost">¥0.0000</strong></div>',
+            "</div>",
+            '<div class="token-table-wrap">',
+            '<table class="token-table">',
+            "<thead><tr>"
+            "<th>模型</th>"
+            "<th>输入 Token</th>"
+            "<th>输出 Token</th>"
+            "<th>缓存 Token</th>"
+            "<th>总 Token</th>"
+            "<th>输入单价</th>"
+            "<th>输出单价</th>"
+            "<th>预估成本</th>"
+            "</tr></thead>",
+            f"<tbody>{''.join(body)}</tbody>",
+            "</table>",
+            "</div>",
+            "</section>",
+        ]
     )
 
 
@@ -1557,6 +1630,86 @@ p { margin: 8px 0; }
 .tile-fail strong { color: var(--fail); }
 .tile-blocked strong { color: var(--blocked); }
 .tile-other strong { color: var(--other); }
+.token-panel {
+  padding: 0;
+  overflow: hidden;
+}
+.token-panel .section-head {
+  margin: 0;
+  padding: 18px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+.token-total-cost {
+  min-width: 180px;
+  text-align: right;
+}
+.token-total-cost span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.token-total-cost strong {
+  display: block;
+  margin-top: 4px;
+  color: #0f766e;
+  font-size: 24px;
+}
+.token-table-wrap {
+  overflow-x: auto;
+}
+.token-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 900px;
+}
+.token-table th,
+.token-table td {
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  white-space: nowrap;
+}
+.token-table th:first-child,
+.token-table td:first-child {
+  text-align: left;
+  white-space: normal;
+  min-width: 260px;
+}
+.token-table th {
+  color: #475569;
+  background: #f8fafc;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+.token-table td:first-child strong,
+.token-table td:first-child span {
+  display: block;
+}
+.token-table td:first-child span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.token-cost {
+  color: #0f766e;
+}
+.price-input {
+  width: 96px;
+  height: 34px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 0 8px;
+  text-align: right;
+  color: var(--text);
+  background: #fff;
+  font: inherit;
+}
+.price-input:focus {
+  outline: 2px solid #bfdbfe;
+  border-color: #60a5fa;
+}
 .pass-ring {
   width: 112px;
   height: 112px;
@@ -2148,6 +2301,26 @@ def _report_js() -> str:
   }
 
   function init() {
+    function updateTokenCosts() {
+      let totalCost = 0;
+      document.querySelectorAll(".token-row").forEach(function (row) {
+        const prompt = Number(row.dataset.prompt || 0);
+        const completion = Number(row.dataset.completion || 0);
+        const inputPrice = Number((row.querySelector(".token-input-price") || {}).value || 0);
+        const outputPrice = Number((row.querySelector(".token-output-price") || {}).value || 0);
+        const cost = (prompt / 1000000) * inputPrice + (completion / 1000000) * outputPrice;
+        totalCost += cost;
+        const target = row.querySelector(".token-cost");
+        if (target) {
+          target.textContent = "¥" + cost.toFixed(4);
+        }
+      });
+      const totalTarget = document.getElementById("token-total-cost");
+      if (totalTarget) {
+        totalTarget.textContent = "¥" + totalCost.toFixed(4);
+      }
+    }
+
     const frames = Array.from(document.querySelectorAll(".shot-frame"));
     frames.forEach(function (frame) {
       const img = frame.querySelector("img");
@@ -2170,6 +2343,10 @@ def _report_js() -> str:
         button.textContent = frame.classList.contains("show-coords") ? "隐藏坐标" : "显示坐标";
       });
     });
+    document.querySelectorAll(".price-input").forEach(function (input) {
+      input.addEventListener("input", updateTokenCosts);
+    });
+    updateTokenCosts();
   }
 
   if (document.readyState === "loading") {
