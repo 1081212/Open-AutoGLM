@@ -242,7 +242,7 @@ class ActionHandler:
         """Handle takeover request (login, captcha, etc.)."""
         message = action.get("message", "User intervention required")
         self.takeover_callback(message)
-        return ActionResult(True, False)
+        return ActionResult(True, False, message=f"Take_over auto-skipped: {message}")
 
     def _handle_note(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle note action for recording a test issue and continuing."""
@@ -502,8 +502,8 @@ class ActionHandler:
 
     @staticmethod
     def _default_takeover(message: str) -> None:
-        """Default takeover callback using console input."""
-        input(f"{message}\nPress Enter after completing manual operation...")
+        """Default takeover callback for unattended test runs."""
+        print(f"Take_over requested, auto-skipping manual intervention: {message}")
 
 
 def parse_action(response: str) -> dict[str, Any]:

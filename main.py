@@ -33,6 +33,13 @@ from phone_agent.config.apps import list_supported_apps
 from phone_agent.config.apps_harmonyos import list_supported_apps as list_harmonyos_apps
 from phone_agent.config.apps_ios import list_supported_apps as list_ios_apps
 from phone_agent.device_factory import DeviceType, get_device_factory, set_device_type
+from phone_agent.gitlab_install import (
+    DEFAULT_GITLAB,
+    DEFAULT_PROJECT,
+    GitLabInstallConfig,
+    GitLabInstallError,
+    build_download_install,
+)
 from phone_agent.model import ModelConfig
 from phone_agent.reporting import TestRunReporter
 from phone_agent.status_judge import JudgeConfig, StepStatusJudge
@@ -397,15 +404,22 @@ def _clip_text(value: str, max_chars: int) -> str:
 def print_judge_token_summary(reporter: TestRunReporter) -> None:
     """Print total text-judge token usage for the current run."""
     total_tokens = sum(
-        step.judge_total_tokens for case in reporter.cases for step in case.test_steps
+        step.judge_total_tokens
+        for case in reporter.cases
+        for attempt in (case.attempts or [case])
+        for step in attempt.test_steps
     )
     prompt_tokens = sum(
-        step.judge_prompt_tokens for case in reporter.cases for step in case.test_steps
+        step.judge_prompt_tokens
+        for case in reporter.cases
+        for attempt in (case.attempts or [case])
+        for step in attempt.test_steps
     )
     completion_tokens = sum(
         step.judge_completion_tokens
         for case in reporter.cases
-        for step in case.test_steps
+        for attempt in (case.attempts or [case])
+        for step in attempt.test_steps
     )
     print(
         f"\nTotal Judge Tokens: {total_tokens} "
@@ -426,13 +440,20 @@ def vision_tokens_for_test_step(reporter: TestRunReporter, test_step_index: int)
 
 def vision_tokens_for_case(case) -> int:
     """Return total vision-model tokens used by one case."""
-    return sum(step.vision_total_tokens for step in case.steps)
+    return sum(
+        step.vision_total_tokens
+        for attempt in (case.attempts or [case])
+        for step in attempt.steps
+    )
 
 
 def print_vision_token_summary(reporter: TestRunReporter) -> None:
     """Print total vision-model token usage for the current run."""
     total_tokens = sum(
-        step.vision_total_tokens for case in reporter.cases for step in case.steps
+        step.vision_total_tokens
+        for case in reporter.cases
+        for attempt in (case.attempts or [case])
+        for step in attempt.steps
     )
     print(f"Total Vision Tokens: {total_tokens}")
 
@@ -441,9 +462,10 @@ def filter_test_cases(
     test_cases: list[ParsedTestCase],
     priorities: list[str] | None = None,
     modules: list[str] | None = None,
+    start: int = 1,
     limit: int | None = None,
 ) -> tuple[list[ParsedTestCase], list[str]]:
-    """按优先级、关联模块和数量上限过滤用例。多个过滤条件之间是 AND 关系。"""
+    """按优先级、关联模块、起始位置和数量上限过滤用例。多个过滤条件之间是 AND 关系。"""
     filtered = test_cases
     messages: list[str] = []
 
@@ -464,6 +486,10 @@ def filter_test_cases(
             if (test_case.module or "").strip() in selected_modules
         ]
         messages.append(f"module: {', '.join(sorted(selected_modules))}")
+
+    if start > 1:
+        filtered = filtered[start - 1 :]
+        messages.append(f"start: {start}")
 
     if limit is not None:
         filtered = filtered[:limit]
@@ -506,6 +532,59 @@ def reset_android_wearfit_home(device_id: str | None = None, wait_seconds: int =
     time.sleep(wait_seconds)
 
 
+def prompt_required(value: str | None, label: str) -> str:
+    """Return an argument value, or ask interactively when it is omitted."""
+    if value:
+        return value
+    try:
+        entered = input(f"请输入{label}: ").strip()
+    except EOFError as exc:
+        raise RuntimeError(f"缺少{label}，请通过参数传入。") from exc
+    if not entered:
+        raise RuntimeError(f"缺少{label}，请通过参数传入。")
+    return entered
+
+
+def handle_install_command(args) -> bool:
+    """Trigger GitLab build, download the APK artifact, and install it."""
+    if not args.install:
+        return False
+    if args.device_type != "adb":
+        raise RuntimeError("--install 当前只支持 Android/ADB APK 安装。")
+
+    gitlab = args.install_gitlab or os.getenv("GITLAB_URL") or DEFAULT_GITLAB
+    project = args.install_project or os.getenv("GITLAB_PROJECT") or DEFAULT_PROJECT
+    token = args.install_token or os.getenv("GITLAB_TOKEN")
+    branch = prompt_required(args.install_branch, "GitLab 分支/ref")
+    variant = prompt_required(args.install_variant or args.install_env, "打包环境/BUILD_VARIANT")
+    if not token:
+        raise RuntimeError("缺少 GitLab PAT。请 export GITLAB_TOKEN 或传入 --install-token。")
+
+    try:
+        build_download_install(
+            GitLabInstallConfig(
+                gitlab=gitlab,
+                project=project,
+                token=token,
+                branch=branch,
+                variant=variant,
+                output_dir=args.install_output_dir,
+                filename=args.install_filename,
+                job_id=args.install_job_id,
+                keep_zip=args.install_keep_zip,
+                poll_interval=args.install_poll_interval,
+                timeout=args.install_timeout,
+                verify_ssl=not args.install_no_verify_ssl,
+                tls_version=args.install_tls_version,
+                use_env_proxy=args.install_use_env_proxy,
+                device_id=args.device_id,
+            )
+        )
+        return True
+    except GitLabInstallError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
 def print_test_case_heading(task: str) -> None:
     """在执行 agent 前打印解析到的测试用例标题信息。"""
     case_id, title, rule_type = parse_test_case_heading(task)
@@ -513,6 +592,205 @@ def print_test_case_heading(task: str) -> None:
         print(f"Parsed Test Case: {case_id} [{rule_type}] - {title}")
     else:
         print("Parsed Test Case: <not found>")
+
+
+def execute_test_case(
+    *,
+    agent,
+    reporter: TestRunReporter,
+    test_case: ParsedTestCase,
+    index: int,
+    total_tasks: int,
+    args,
+    device_type: DeviceType,
+    status_judge: StepStatusJudge | None,
+    attempt: int = 0,
+) -> tuple[str, str]:
+    """Execute one parsed test case once and return (case_status, result_message)."""
+    task = test_case.task
+    case_label = test_case.case_id or f"Task {index}"
+    title = f" - {test_case.title}" if test_case.title else ""
+    rule_type = test_case.rule_type or "unknown"
+    priority = test_case.priority or "unknown"
+    module = test_case.module or "unknown"
+    attempt_text = f" Attempt {attempt + 1}" if attempt else ""
+    print(
+        f"\nTask {index}/{total_tasks}{attempt_text}: "
+        f"{case_label} [{rule_type}, {priority}, {module}]{title}\n"
+    )
+    print_test_case_heading(task)
+    if device_type == DeviceType.ADB:
+        reset_android_wearfit_home(args.device_id, wait_seconds=8)
+
+    execution_steps = parse_execution_steps(task) if args.file else []
+    if execution_steps:
+        reporter.start_case(test_case.task, index, attempt=attempt + 1)
+        reporter.set_test_steps(
+            [
+                {
+                    "index": step.index,
+                    "text": step.text,
+                    "target_state": step.target_state,
+                    "activity": step.activity,
+                }
+                for step in execution_steps
+            ]
+        )
+
+        completed_summaries: list[str] = []
+        case_results: list[str] = []
+        step_statuses: list[str] = []
+        terminal_status = "PASS"
+        for step_position, execution_step in enumerate(execution_steps, start=1):
+            is_last_step = step_position == len(execution_steps)
+            print(
+                f"\nCase {index}/{total_tasks} Step "
+                f"{execution_step.index}/{len(execution_steps)}: "
+                f"{execution_step.text}"
+            )
+            reporter.begin_test_step(execution_step.index)
+            step_task = build_step_task(
+                test_case,
+                execution_step,
+                execution_steps,
+                completed_summaries,
+                external_status_judge=bool(status_judge),
+            )
+            result = agent.run(step_task)
+            step_limit_reached = result.strip() == "Max steps reached"
+            judge_raw = None
+            judge_prompt_tokens = 0
+            judge_completion_tokens = 0
+            judge_total_tokens = 0
+            if status_judge:
+                operation_log = build_operation_log(reporter, execution_step.index)
+                agent_text_log = build_agent_text_log(agent.context)
+                try:
+                    judge_result = status_judge.judge(
+                        case_id=test_case.case_id,
+                        case_title=test_case.title,
+                        step_index=execution_step.index,
+                        step_text=execution_step.text,
+                        target_state=execution_step.target_state,
+                        expected_activity=execution_step.activity,
+                        case_task=test_case.task,
+                        all_steps_text=format_execution_steps(execution_steps),
+                        previous_steps=completed_summaries,
+                        agent_text_log=agent_text_log,
+                        operation_log=operation_log,
+                        model_result=result,
+                        step_limit_reached=step_limit_reached,
+                    )
+                    step_status = judge_result.status
+                    result = judge_result.message
+                    judge_raw = judge_result.raw
+                    judge_prompt_tokens = judge_result.prompt_tokens
+                    judge_completion_tokens = judge_result.completion_tokens
+                    judge_total_tokens = judge_result.total_tokens
+                except Exception as exc:
+                    step_status = "REVIEW"
+                    result = (
+                        "STATUS: REVIEW\n"
+                        f"REASON: 判定模型调用失败，需要人工复核：{exc}"
+                    )
+                    judge_raw = str(exc)
+            else:
+                if step_limit_reached:
+                    result = agent.request_finish_status_only(
+                        execution_step.text,
+                        execution_step.target_state,
+                    )
+                step_status = classify_step_result(result, is_last_step=is_last_step)
+            reporter.finish_test_step(
+                execution_step.index,
+                step_status,
+                result,
+                judge_raw=judge_raw,
+                judge_prompt_tokens=judge_prompt_tokens,
+                judge_completion_tokens=judge_completion_tokens,
+                judge_total_tokens=judge_total_tokens,
+            )
+            step_statuses.append(step_status)
+            summary = (
+                f"{execution_step.index}. {step_status}: "
+                f"{result[:220].replace(chr(10), ' ')}"
+            )
+            completed_summaries.append(summary)
+            case_results.append(summary)
+            token_text = (
+                f" Judge Tokens: {judge_total_tokens} "
+                f"(prompt={judge_prompt_tokens}, completion={judge_completion_tokens})"
+                if status_judge
+                else ""
+            )
+            vision_step_tokens = vision_tokens_for_test_step(
+                reporter, execution_step.index
+            )
+            print(
+                f"Step Result: {step_status} - {result}{token_text} "
+                f"Vision Tokens: {vision_step_tokens}"
+            )
+            agent.reset()
+
+            if step_status in {"FAIL", "BLOCKED"}:
+                terminal_status = step_status
+                break
+
+        final_result = "\n".join(case_results)
+        if terminal_status == "PASS":
+            executed_statuses = [
+                status for status in step_statuses if status and status != "PENDING"
+            ]
+            last_status = executed_statuses[-1] if executed_statuses else "PASS"
+            if last_status in {"PASS", "SKIPPED"}:
+                terminal_status = "PASS"
+            elif last_status == "BLOCKED":
+                terminal_status = "BLOCKED"
+            elif last_status in {"UNKNOWN", "STEP_LIMIT", "REVIEW"}:
+                terminal_status = "REVIEW"
+            else:
+                terminal_status = "PASS"
+
+        if terminal_status == "PASS":
+            final_result = "所有测试步骤已按顺序执行完成。\n" + final_result
+        elif terminal_status == "REVIEW":
+            final_result = (
+                "REVIEW: 存在未明确判定或达到单步步数上限的步骤。\n"
+                + final_result
+            )
+        else:
+            final_result = f"{terminal_status}: 测试步骤执行中断。\n" + final_result
+
+        case_status = "UNKNOWN"
+        if reporter.current_case:
+            case_status = reporter.finish_case(final_result)
+        if status_judge and reporter.cases:
+            usage = sum(step.judge_total_tokens for step in reporter.cases[-1].test_steps)
+            prompt_usage = sum(
+                step.judge_prompt_tokens for step in reporter.cases[-1].test_steps
+            )
+            completion_usage = sum(
+                step.judge_completion_tokens for step in reporter.cases[-1].test_steps
+            )
+            print(
+                f"Case Judge Tokens: {usage} "
+                f"(prompt={prompt_usage}, completion={completion_usage})"
+            )
+        if reporter.cases:
+            print(f"Case Vision Tokens: {vision_tokens_for_case(reporter.cases[-1])}")
+        print(f"\nResult {index}/{total_tasks}: {final_result}")
+        return case_status, final_result
+
+    reporter.start_case(test_case.task, index, attempt=attempt + 1)
+    result = agent.run(task)
+    case_status = "UNKNOWN"
+    if reporter.current_case:
+        case_status = reporter.finish_case(result)
+    if reporter.cases:
+        print(f"Case Vision Tokens: {vision_tokens_for_case(reporter.cases[-1])}")
+    print(f"\nResult {index}/{total_tasks}: {result}")
+    agent.reset()
+    return case_status, result
 
 
 def check_system_requirements(
@@ -880,6 +1158,12 @@ Examples:
     # Run at most 5 filtered test cases from a Markdown file
     python main.py --file docs/wearfit_cases.md --priority P0 --limit 5
 
+    # Run 10 cases starting from the 21st matched case, retry each non-PASS once
+    python main.py --file docs/wearfit_cases.md --module 手表 --start 21 --limit 10 --case-retries 1
+
+    # Build from GitLab, download APK artifacts, install to Android phone, then run tests
+    python main.py --install --install-branch develop --install-env wpZhDebug
+
     # Check WebDriverAgent status
     python main.py --device-type ios --wda-status
 
@@ -1083,6 +1367,125 @@ Examples:
     )
 
     parser.add_argument(
+        "--start",
+        type=int,
+        default=1,
+        help=(
+            "1-based start position from --file after priority/module filtering. "
+            "Useful for batch execution, e.g. --start 11 --limit 10."
+        ),
+    )
+
+    parser.add_argument(
+        "--case-retries",
+        type=int,
+        default=int(os.getenv("PHONE_AGENT_CASE_RETRIES", "1")),
+        help=(
+            "Retry count for each non-PASS test case. Default: 1. "
+            "Use 0 to disable retries."
+        ),
+    )
+
+    # GitLab build/download/install options
+    parser.add_argument(
+        "--install",
+        action="store_true",
+        help="Before running tasks/tests, trigger GitLab build, download APK artifacts, and install to Android device.",
+    )
+
+    parser.add_argument(
+        "--install-branch",
+        help="GitLab branch/ref for --install. If omitted, prompts interactively.",
+    )
+
+    parser.add_argument(
+        "--install-env",
+        help=(
+            "Build environment/variant for --install, e.g. wpZhDebug. "
+            "Alias of --install-variant."
+        ),
+    )
+
+    parser.add_argument(
+        "--install-variant",
+        help="BUILD_VARIANT for --install, e.g. wpZhDebug, wpZhRelease.",
+    )
+
+    parser.add_argument(
+        "--install-token",
+        default=os.getenv("GITLAB_TOKEN"),
+        help="GitLab PAT for --install. Default reads GITLAB_TOKEN.",
+    )
+
+    parser.add_argument(
+        "--install-gitlab",
+        default=os.getenv("GITLAB_URL"),
+        help="GitLab URL for --install. Default uses helper script default.",
+    )
+
+    parser.add_argument(
+        "--install-project",
+        default=os.getenv("GITLAB_PROJECT"),
+        help="GitLab project path/id for --install. Default uses helper script default.",
+    )
+
+    parser.add_argument(
+        "--install-output-dir",
+        default="gitlab_artifacts",
+        help="Directory to save downloaded APK. Default: gitlab_artifacts.",
+    )
+
+    parser.add_argument(
+        "--install-filename",
+        help="Optional APK filename after download.",
+    )
+
+    parser.add_argument(
+        "--install-job-id",
+        type=int,
+        help="Skip automatic artifact job selection and download this GitLab job id.",
+    )
+
+    parser.add_argument(
+        "--install-keep-zip",
+        action="store_true",
+        help="Keep downloaded artifacts zip after extracting APK.",
+    )
+
+    parser.add_argument(
+        "--install-poll-interval",
+        type=int,
+        default=20,
+        help="GitLab pipeline polling interval in seconds. Default: 20.",
+    )
+
+    parser.add_argument(
+        "--install-timeout",
+        type=int,
+        default=0,
+        help="GitLab pipeline wait timeout in seconds. 0 means wait forever.",
+    )
+
+    parser.add_argument(
+        "--install-no-verify-ssl",
+        action="store_true",
+        help="Do not verify GitLab HTTPS certificate for --install.",
+    )
+
+    parser.add_argument(
+        "--install-tls-version",
+        choices=["auto", "1.2", "1.3"],
+        default=os.getenv("GITLAB_TLS_VERSION", "1.2"),
+        help="GitLab HTTPS TLS version for --install. Default: 1.2.",
+    )
+
+    parser.add_argument(
+        "--install-use-env-proxy",
+        action="store_true",
+        help="Allow requests to use HTTP_PROXY/HTTPS_PROXY/NO_PROXY for --install.",
+    )
+
+    parser.add_argument(
         "tasks",
         nargs="*",
         type=str,
@@ -1096,11 +1499,19 @@ Examples:
         parser.error("--priority can only be used together with --file")
     if args.module and not args.file:
         parser.error("--module can only be used together with --file")
+    if args.start != 1 and not args.file:
+        parser.error("--start can only be used together with --file")
+    if args.start <= 0:
+        parser.error("--start must be a positive integer")
     if args.limit is not None:
         if not args.file:
             parser.error("--limit can only be used together with --file")
         if args.limit <= 0:
             parser.error("--limit must be a positive integer")
+    if args.case_retries < 0:
+        parser.error("--case-retries must be zero or a positive integer")
+    if args.install_env and args.install_variant and args.install_env != args.install_variant:
+        parser.error("--install-env and --install-variant cannot have different values")
     return args
 
 
@@ -1323,6 +1734,17 @@ def main():
     ):
         sys.exit(1)
 
+    # Optional pre-test install flow: build/download/install first, then continue testing.
+    if args.install:
+        if device_type != DeviceType.ADB:
+            print("❌ --install 当前只支持 Android/ADB APK 安装。", file=sys.stderr)
+            sys.exit(1)
+        try:
+            handle_install_command(args)
+        except RuntimeError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            sys.exit(1)
+
     # Check model API connectivity and model availability
     if not check_model_api(args.base_url, args.model, args.apikey):
         sys.exit(1)
@@ -1462,6 +1884,7 @@ def main():
             test_cases,
             priorities=args.priority,
             modules=args.module,
+            start=args.start,
             limit=args.limit,
         )
         if filter_messages:
@@ -1481,206 +1904,43 @@ def main():
         total_tasks = len(test_cases)
         try:
             for index, test_case in enumerate(test_cases, start=1):
-                task = test_case.task
-                case_label = test_case.case_id or f"Task {index}"
-                title = f" - {test_case.title}" if test_case.title else ""
-                rule_type = test_case.rule_type or "unknown"
-                priority = test_case.priority or "unknown"
-                module = test_case.module or "unknown"
-                print(
-                    f"\nTask {index}/{total_tasks}: "
-                    f"{case_label} [{rule_type}, {priority}, {module}]{title}\n"
-                )
-                print_test_case_heading(task)
-                if device_type == DeviceType.ADB:
-                    reset_android_wearfit_home(args.device_id, wait_seconds=8)
-
-                execution_steps = parse_execution_steps(task) if args.file else []
-                if execution_steps:
-                    reporter.start_case(task, index)
-                    reporter.set_test_steps(
-                        [
-                            {
-                                "index": step.index,
-                                "text": step.text,
-                                "target_state": step.target_state,
-                                "activity": step.activity,
-                            }
-                            for step in execution_steps
-                        ]
+                final_status = "UNKNOWN"
+                final_result = ""
+                max_attempts = 1 + args.case_retries
+                for attempt in range(max_attempts):
+                    if attempt:
+                        print(
+                            f"\nRetrying case {test_case.case_id or index}: "
+                            f"attempt {attempt + 1}/{max_attempts}"
+                        )
+                    final_status, final_result = execute_test_case(
+                        agent=agent,
+                        reporter=reporter,
+                        test_case=test_case,
+                        index=index,
+                        total_tasks=total_tasks,
+                        args=args,
+                        device_type=device_type,
+                        status_judge=status_judge,
+                        attempt=attempt,
                     )
-
-                    completed_summaries: list[str] = []
-                    case_results: list[str] = []
-                    step_statuses: list[str] = []
-                    terminal_status = "PASS"
-                    for step_position, execution_step in enumerate(
-                        execution_steps, start=1
-                    ):
-                        is_last_step = step_position == len(execution_steps)
-                        print(
-                            f"\nCase {index}/{total_tasks} Step "
-                            f"{execution_step.index}/{len(execution_steps)}: "
-                            f"{execution_step.text}"
-                        )
-                        reporter.begin_test_step(execution_step.index)
-                        step_task = build_step_task(
-                            test_case,
-                            execution_step,
-                            execution_steps,
-                            completed_summaries,
-                            external_status_judge=bool(status_judge),
-                        )
-                        result = agent.run(step_task)
-                        step_limit_reached = result.strip() == "Max steps reached"
-                        judge_raw = None
-                        judge_prompt_tokens = 0
-                        judge_completion_tokens = 0
-                        judge_total_tokens = 0
-                        if status_judge:
-                            operation_log = build_operation_log(
-                                reporter, execution_step.index
+                    if final_status == "PASS":
+                        if attempt:
+                            print(
+                                f"Retry passed for {test_case.case_id or index} "
+                                f"on attempt {attempt + 1}/{max_attempts}."
                             )
-                            agent_text_log = build_agent_text_log(agent.context)
-                            try:
-                                judge_result = status_judge.judge(
-                                    case_id=test_case.case_id,
-                                    case_title=test_case.title,
-                                    step_index=execution_step.index,
-                                    step_text=execution_step.text,
-                                    target_state=execution_step.target_state,
-                                    expected_activity=execution_step.activity,
-                                    case_task=test_case.task,
-                                    all_steps_text=format_execution_steps(execution_steps),
-                                    previous_steps=completed_summaries,
-                                    agent_text_log=agent_text_log,
-                                    operation_log=operation_log,
-                                    model_result=result,
-                                    step_limit_reached=step_limit_reached,
-                                )
-                                step_status = judge_result.status
-                                result = judge_result.message
-                                judge_raw = judge_result.raw
-                                judge_prompt_tokens = judge_result.prompt_tokens
-                                judge_completion_tokens = judge_result.completion_tokens
-                                judge_total_tokens = judge_result.total_tokens
-                            except Exception as exc:
-                                step_status = "REVIEW"
-                                result = (
-                                    "STATUS: REVIEW\n"
-                                    f"REASON: 判定模型调用失败，需要人工复核：{exc}"
-                                )
-                                judge_raw = str(exc)
-                        else:
-                            if step_limit_reached:
-                                result = agent.request_finish_status_only(
-                                    execution_step.text,
-                                    execution_step.target_state,
-                                )
-                            step_status = classify_step_result(
-                                result, is_last_step=is_last_step
-                            )
-                        reporter.finish_test_step(
-                            execution_step.index,
-                            step_status,
-                            result,
-                            judge_raw=judge_raw,
-                            judge_prompt_tokens=judge_prompt_tokens,
-                            judge_completion_tokens=judge_completion_tokens,
-                            judge_total_tokens=judge_total_tokens,
-                        )
-                        step_statuses.append(step_status)
-                        summary = (
-                            f"{execution_step.index}. {step_status}: "
-                            f"{result[:220].replace(chr(10), ' ')}"
-                        )
-                        completed_summaries.append(summary)
-                        case_results.append(summary)
-                        token_text = (
-                            f" Judge Tokens: {judge_total_tokens} "
-                            f"(prompt={judge_prompt_tokens}, completion={judge_completion_tokens})"
-                            if status_judge
-                            else ""
-                        )
-                        vision_step_tokens = vision_tokens_for_test_step(
-                            reporter, execution_step.index
-                        )
+                        break
+                    if attempt < max_attempts - 1:
                         print(
-                            f"Step Result: {step_status} - {result}{token_text} "
-                            f"Vision Tokens: {vision_step_tokens}"
-                        )
-                        agent.reset()
-
-                        if step_status in {"FAIL", "BLOCKED"}:
-                            terminal_status = step_status
-                            break
-
-                    final_result = "\n".join(case_results)
-                    if terminal_status == "PASS":
-                        executed_statuses = [
-                            status
-                            for status in step_statuses
-                            if status and status != "PENDING"
-                        ]
-                        last_status = (
-                            executed_statuses[-1] if executed_statuses else "PASS"
-                        )
-                        if last_status in {"PASS", "SKIPPED"}:
-                            terminal_status = "PASS"
-                        elif last_status == "BLOCKED":
-                            terminal_status = "BLOCKED"
-                        elif last_status in {"UNKNOWN", "STEP_LIMIT", "REVIEW"}:
-                            terminal_status = "REVIEW"
-                        else:
-                            terminal_status = "PASS"
-
-                    if terminal_status == "PASS":
-                        final_result = "所有测试步骤已按顺序执行完成。\n" + final_result
-                    elif terminal_status == "REVIEW":
-                        final_result = (
-                            "REVIEW: 存在未明确判定或达到单步步数上限的步骤。\n"
-                            + final_result
+                            f"Case {test_case.case_id or index} ended as "
+                            f"{final_status}; retry will run."
                         )
                     else:
-                        final_result = f"{terminal_status}: 测试步骤执行中断。\n" + final_result
-
-                    if reporter.current_case:
-                        reporter.finish_case(final_result)
-                    if status_judge and reporter.cases:
-                        usage = sum(
-                            step.judge_total_tokens
-                            for step in reporter.cases[-1].test_steps
-                        )
-                        prompt_usage = sum(
-                            step.judge_prompt_tokens
-                            for step in reporter.cases[-1].test_steps
-                        )
-                        completion_usage = sum(
-                            step.judge_completion_tokens
-                            for step in reporter.cases[-1].test_steps
-                        )
                         print(
-                            f"Case Judge Tokens: {usage} "
-                            f"(prompt={prompt_usage}, completion={completion_usage})"
+                            f"Case {test_case.case_id or index} final status after "
+                            f"{max_attempts} attempt(s): {final_status}"
                         )
-                    if reporter.cases:
-                        print(
-                            f"Case Vision Tokens: "
-                            f"{vision_tokens_for_case(reporter.cases[-1])}"
-                        )
-                    print(f"\nResult {index}/{total_tasks}: {final_result}")
-                else:
-                    reporter.start_case(task, index)
-                    result = agent.run(task)
-                    if reporter.current_case:
-                        reporter.finish_case(result)
-                    if reporter.cases:
-                        print(
-                            f"Case Vision Tokens: "
-                            f"{vision_tokens_for_case(reporter.cases[-1])}"
-                        )
-                    print(f"\nResult {index}/{total_tasks}: {result}")
-                    agent.reset()
         except (Exception, KeyboardInterrupt) as exc:
             if reporter.current_case:
                 reporter.finish_case(

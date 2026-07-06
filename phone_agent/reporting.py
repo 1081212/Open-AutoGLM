@@ -88,6 +88,19 @@ class TestStepArtifact:
 
 
 @dataclass
+class CaseAttemptReport:
+    attempt: int
+    status: str = "RUNNING"
+    result_message: str | None = None
+    started_at: str = field(default_factory=_now)
+    finished_at: str | None = None
+    artifacts_dir: str = ""
+    test_steps: list[TestStepArtifact] = field(default_factory=list)
+    steps: list[StepArtifact] = field(default_factory=list)
+    issues: list[str] = field(default_factory=list)
+
+
+@dataclass
 class CaseReport:
     case_id: str
     title: str
@@ -100,6 +113,7 @@ class CaseReport:
     test_steps: list[TestStepArtifact] = field(default_factory=list)
     steps: list[StepArtifact] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
+    attempts: list[CaseAttemptReport] = field(default_factory=list)
 
 
 def extract_case_id(task: str, fallback_index: int) -> str:
@@ -150,25 +164,43 @@ class TestRunReporter:
         self.wda_url = wda_url or os.getenv("PHONE_AGENT_WDA_URL", "http://localhost:8100")
         self.cases: list[CaseReport] = []
         self.current_case: CaseReport | None = None
+        self.current_attempt: CaseAttemptReport | None = None
         self.current_test_step_index: int | None = None
         self._case_step_counter = 0
         self.run_started_at = _now()
         self.environment: dict[str, Any] = self._collect_environment()
 
-    def start_case(self, task: str, index: int) -> CaseReport:
+    def start_case(self, task: str, index: int, attempt: int = 1) -> CaseReport:
         case_id = extract_case_id(task, index)
         title = task.split("：", 1)[0].split(":", 1)[0][:120]
         case_dir = self.root_dir / case_id
         (case_dir / "screenshots").mkdir(parents=True, exist_ok=True)
         (case_dir / "ui").mkdir(parents=True, exist_ok=True)
-        case = CaseReport(
-            case_id=case_id,
-            title=title,
-            task=task,
-            artifacts_dir=str(case_dir),
+        case = next((item for item in self.cases if item.case_id == case_id), None)
+        if case is None:
+            case = CaseReport(
+                case_id=case_id,
+                title=title,
+                task=task,
+                artifacts_dir=str(case_dir),
+            )
+            self.cases.append(case)
+        attempt_dir = case_dir / f"attempt_{attempt:02d}"
+        (attempt_dir / "screenshots").mkdir(parents=True, exist_ok=True)
+        (attempt_dir / "ui").mkdir(parents=True, exist_ok=True)
+        attempt_report = CaseAttemptReport(
+            attempt=attempt,
+            artifacts_dir=str(attempt_dir),
         )
-        self.cases.append(case)
+        case.attempts.append(attempt_report)
+        case.status = "RUNNING"
+        case.result_message = None
+        case.finished_at = None
+        case.test_steps = attempt_report.test_steps
+        case.steps = attempt_report.steps
+        case.issues = attempt_report.issues
         self.current_case = case
+        self.current_attempt = attempt_report
         self.current_test_step_index = None
         self._case_step_counter = 0
         package_name = extract_package_name(task)
@@ -183,7 +215,7 @@ class TestRunReporter:
         """Register parsed Markdown test steps for the current case."""
         if not self.current_case:
             return
-        self.current_case.test_steps = [
+        parsed_steps = [
             TestStepArtifact(
                 index=int(step["index"]),
                 text=str(step["text"]),
@@ -192,6 +224,9 @@ class TestRunReporter:
             )
             for step in steps
         ]
+        self.current_case.test_steps = parsed_steps
+        if self.current_attempt:
+            self.current_attempt.test_steps = parsed_steps
         self._write_case_json(self.current_case)
 
     def begin_test_step(self, index: int) -> None:
@@ -245,10 +280,16 @@ class TestRunReporter:
             return None
 
         case_dir = Path(self.current_case.artifacts_dir)
+        attempt_dir = (
+            Path(self.current_attempt.artifacts_dir)
+            if self.current_attempt
+            else case_dir
+        )
         self._case_step_counter += 1
         artifact_step = self._case_step_counter
-        screenshot_rel = f"screenshots/step_{artifact_step:03d}.png"
-        screenshot_path = case_dir / screenshot_rel
+        attempt_rel = attempt_dir.relative_to(case_dir)
+        screenshot_rel = str(attempt_rel / "screenshots" / f"step_{artifact_step:03d}.png")
+        screenshot_path = attempt_dir / "screenshots" / f"step_{artifact_step:03d}.png"
         try:
             screenshot_path.write_bytes(base64.b64decode(screenshot_base64))
         except Exception:
@@ -258,8 +299,10 @@ class TestRunReporter:
         current_activity = self._get_current_activity()
         xml = self._dump_ui_xml()
         if xml:
-            ui_rel = f"ui/step_{artifact_step:03d}.xml"
-            (case_dir / ui_rel).write_text(xml, encoding="utf-8")
+            ui_rel = str(attempt_rel / "ui" / f"step_{artifact_step:03d}.xml")
+            (attempt_dir / "ui" / f"step_{artifact_step:03d}.xml").write_text(
+                xml, encoding="utf-8"
+            )
         ui_texts = _extract_ui_texts(xml or "")
 
         artifact = StepArtifact(
@@ -305,15 +348,32 @@ class TestRunReporter:
         if not self.current_case:
             return "UNKNOWN"
         case = self.current_case
-        case.result_message = result_message
-        case.finished_at = _now()
-        case.status = self._classify_status(case, result_message, max_steps_reached)
+        finished_at = _now()
+        attempt_status = self._classify_status(case, result_message, max_steps_reached)
+        if self.current_attempt:
+            self.current_attempt.status = attempt_status
+            self.current_attempt.result_message = result_message
+            self.current_attempt.finished_at = finished_at
+
+        selected_attempt = self.current_attempt
+        if case.attempts:
+            pass_attempts = [attempt for attempt in case.attempts if attempt.status == "PASS"]
+            selected_attempt = pass_attempts[-1] if pass_attempts else case.attempts[-1]
+
+        case.result_message = selected_attempt.result_message if selected_attempt else result_message
+        case.finished_at = finished_at
+        case.status = selected_attempt.status if selected_attempt else attempt_status
+        if selected_attempt:
+            case.test_steps = selected_attempt.test_steps
+            case.steps = selected_attempt.steps
+            case.issues = selected_attempt.issues
         self._write_case_json(case)
         self._write_case_markdown(case)
         self._write_case_html(case)
         self._write_summary()
         self._write_summary_html()
         self.current_case = None
+        self.current_attempt = None
         return case.status
 
     def finish_run(self) -> None:
@@ -494,6 +554,7 @@ class TestRunReporter:
             f"# {case.case_id}",
             "",
             f"- Status: {case.status}",
+            f"- Attempts: {_attempt_count(case)}",
             f"- Started: {case.started_at}",
             f"- Finished: {case.finished_at}",
             f"- Result: {case.result_message or ''}",
@@ -589,15 +650,15 @@ class TestRunReporter:
             ]
         )
         lines.extend(["", "## Cases", ""])
-        lines.append("| Case | Status | Vision Tokens | Judge Tokens | Report | Last Screenshot |")
-        lines.append("| --- | --- | ---: | ---: | --- | --- |")
+        lines.append("| Case | Status | Attempts | Vision Tokens | Judge Tokens | Report | Last Screenshot |")
+        lines.append("| --- | --- | ---: | ---: | ---: | --- | --- |")
         for case in self.cases:
             last = case.steps[-1] if case.steps else None
             screenshot = f"{case.case_id}/{last.screenshot}" if last and last.screenshot else ""
             case_usage = _judge_usage_for_case(case)
             case_vision_usage = _vision_usage_for_case(case)
             lines.append(
-                f"| {case.case_id} | {case.status} | {case_vision_usage['total']} | {case_usage['total']} | {case.case_id}/report.md | {screenshot} |"
+                f"| {case.case_id} | {case.status} | {_attempt_count(case)} | {case_vision_usage['total']} | {case_usage['total']} | {case.case_id}/report.md | {screenshot} |"
             )
         summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -636,6 +697,7 @@ class TestRunReporter:
             _metric_card("执行时长", _case_duration(case)),
             _metric_card("测试步骤数", str(len(case.test_steps) or len(case.steps))),
             _metric_card("模型动作数", str(len(case.steps))),
+            _metric_card("尝试次数", str(_attempt_count(case))),
             _metric_card("视觉模型 Tokens", str(vision_usage["total"])),
             _metric_card(
                 "判定模型 Tokens",
@@ -670,17 +732,21 @@ class TestRunReporter:
             )
 
         lines.extend(['<section class="panel">', "<h2>步骤详情</h2>"])
-        if case.test_steps:
-            for test_step in case.test_steps:
-                model_steps = [
-                    step
-                    for step in case.steps
-                    if step.test_step_index == test_step.index
-                ]
-                lines.append(_render_test_step_html(case, test_step, model_steps))
-        else:
-            for step in case.steps:
-                lines.append(_render_step_html(case, step))
+        attempts = _case_attempts(case)
+        if len(attempts) > 1:
+            lines.append('<div class="attempt-tabs" role="tablist">')
+            active_attempt = attempts[-1].attempt
+            for attempt in attempts:
+                active_class = " active" if attempt.attempt == active_attempt else ""
+                lines.append(
+                    f'<button class="attempt-tab{active_class}" type="button" '
+                    f'data-attempt-tab="{attempt.attempt}">'
+                    f'Attempt {attempt.attempt} · {_h(attempt.status)}</button>'
+                )
+            lines.append("</div>")
+        for attempt in attempts:
+            active_class = " active" if attempt == attempts[-1] else ""
+            lines.append(_render_attempt_html(case, attempt, active_class))
         lines.extend(["</section>", "</main>", "</body>", "</html>"])
         lines.insert(-2, f"<script>{_report_js()}</script>")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -796,9 +862,25 @@ def _metric_card(label: str, value: str, tone: str = "") -> str:
 
 
 def _judge_usage_for_case(case: CaseReport) -> dict[str, int]:
-    prompt = sum(step.judge_prompt_tokens for step in case.test_steps)
-    completion = sum(step.judge_completion_tokens for step in case.test_steps)
-    total = sum(step.judge_total_tokens for step in case.test_steps)
+    attempts = case.attempts or [
+        CaseAttemptReport(
+            attempt=1,
+            test_steps=case.test_steps,
+            steps=case.steps,
+            issues=case.issues,
+        )
+    ]
+    prompt = sum(
+        step.judge_prompt_tokens for attempt in attempts for step in attempt.test_steps
+    )
+    completion = sum(
+        step.judge_completion_tokens
+        for attempt in attempts
+        for step in attempt.test_steps
+    )
+    total = sum(
+        step.judge_total_tokens for attempt in attempts for step in attempt.test_steps
+    )
     return {"prompt": prompt, "completion": completion, "total": total}
 
 
@@ -815,10 +897,26 @@ def _judge_usage_for_run(cases: list[CaseReport]) -> dict[str, int]:
 
 
 def _vision_usage_for_case(case: CaseReport) -> dict[str, int]:
-    prompt = sum(step.vision_prompt_tokens for step in case.steps)
-    completion = sum(step.vision_completion_tokens for step in case.steps)
-    cached = sum(step.vision_cached_tokens for step in case.steps)
-    total = sum(step.vision_total_tokens for step in case.steps)
+    attempts = case.attempts or [
+        CaseAttemptReport(
+            attempt=1,
+            test_steps=case.test_steps,
+            steps=case.steps,
+            issues=case.issues,
+        )
+    ]
+    prompt = sum(
+        step.vision_prompt_tokens for attempt in attempts for step in attempt.steps
+    )
+    completion = sum(
+        step.vision_completion_tokens for attempt in attempts for step in attempt.steps
+    )
+    cached = sum(
+        step.vision_cached_tokens for attempt in attempts for step in attempt.steps
+    )
+    total = sum(
+        step.vision_total_tokens for attempt in attempts for step in attempt.steps
+    )
     return {
         "prompt": prompt,
         "completion": completion,
@@ -922,7 +1020,7 @@ def _build_summary_html(
             '<a class="case-row" href="' + _h(report_link) + '">'
             f'<span class="status-dot {case.status.lower()}"></span>'
             f'<span class="case-name"><strong>{_h(case.case_id)}</strong><em>{_h(_display_title(case))}</em></span>'
-            f'<span class="case-steps">{_case_step_count(case)} · {_h(_case_duration(case))} · Vision {case_vision_usage["total"]} · Judge {case_usage["total"]}</span>'
+            f'<span class="case-steps">{_case_step_count(case)} · Attempts {_attempt_count(case)} · {_h(_case_duration(case))} · Vision {case_vision_usage["total"]} · Judge {case_usage["total"]}</span>'
             f'<span class="case-reason">{_h(_shorten(reason, 110))}</span>'
             f'<span class="status {case.status.lower()}">{_h(case.status)}</span>'
             "</a>"
@@ -1102,6 +1200,40 @@ def _render_step_html(case: CaseReport, step: StepArtifact) -> str:
     )
 
 
+def _render_attempt_html(
+    case: CaseReport, attempt: CaseAttemptReport, active_class: str = ""
+) -> str:
+    model_html: list[str] = []
+    if attempt.test_steps:
+        for test_step in attempt.test_steps:
+            model_steps = [
+                step for step in attempt.steps if step.test_step_index == test_step.index
+            ]
+            model_html.append(_render_test_step_html(case, test_step, model_steps))
+    elif attempt.steps:
+        for step in attempt.steps:
+            model_html.append(_render_step_html(case, step))
+    else:
+        model_html.append('<div class="empty-state"><strong>无模型动作记录</strong></div>')
+
+    vision_total = sum(step.vision_total_tokens for step in attempt.steps)
+    judge_total = sum(step.judge_total_tokens for step in attempt.test_steps)
+    return "\n".join(
+        [
+            f'<div class="attempt-panel{active_class}" data-attempt-panel="{attempt.attempt}">',
+            '<div class="attempt-summary">',
+            f'<span class="status {attempt.status.lower()}">{_h(attempt.status)}</span>',
+            f"<span>Attempt {attempt.attempt}</span>",
+            f"<span>{_h(_attempt_duration(attempt))}</span>",
+            f"<span>Vision {vision_total}</span>",
+            f"<span>Judge {judge_total}</span>",
+            "</div>",
+            *model_html,
+            "</div>",
+        ]
+    )
+
+
 def _render_test_step_html(
     case: CaseReport, test_step: TestStepArtifact, model_steps: list[StepArtifact]
 ) -> str:
@@ -1253,6 +1385,21 @@ def _case_duration(case: CaseReport) -> str:
     return f"{sec}s"
 
 
+def _attempt_duration(attempt: CaseAttemptReport) -> str:
+    if not attempt.started_at or not attempt.finished_at:
+        return "-"
+    try:
+        start = datetime.fromisoformat(attempt.started_at)
+        end = datetime.fromisoformat(attempt.finished_at)
+        seconds = max(0, int((end - start).total_seconds()))
+    except ValueError:
+        return "-"
+    minutes, sec = divmod(seconds, 60)
+    if minutes:
+        return f"{minutes}m {sec}s"
+    return f"{sec}s"
+
+
 def _test_step_duration(step: TestStepArtifact) -> str:
     if not step.started_at or not step.finished_at:
         return "-"
@@ -1266,6 +1413,28 @@ def _test_step_duration(step: TestStepArtifact) -> str:
     if minutes:
         return f"{minutes}m {sec}s"
     return f"{sec}s"
+
+
+def _case_attempts(case: CaseReport) -> list[CaseAttemptReport]:
+    if case.attempts:
+        return case.attempts
+    return [
+        CaseAttemptReport(
+            attempt=1,
+            status=case.status,
+            result_message=case.result_message,
+            started_at=case.started_at,
+            finished_at=case.finished_at,
+            artifacts_dir=case.artifacts_dir,
+            test_steps=case.test_steps,
+            steps=case.steps,
+            issues=case.issues,
+        )
+    ]
+
+
+def _attempt_count(case: CaseReport) -> int:
+    return len(case.attempts) if case.attempts else 1
 
 
 def _case_step_count(case: CaseReport) -> str:
@@ -2007,6 +2176,57 @@ pre {
   font-weight: 700;
   margin-bottom: 10px;
 }
+.attempt-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+.attempt-tab {
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 8px 12px;
+  color: #475569;
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.attempt-tab.active {
+  color: #0f172a;
+  background: #fff;
+  border-color: #cbd5e1;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, .08);
+}
+.attempt-panel {
+  display: none;
+}
+.attempt-panel.active {
+  display: block;
+}
+.attempt-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+.attempt-summary span:not(.status) {
+  color: #475569;
+  background: #f1f5f9;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
 .step-card {
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -2345,6 +2565,18 @@ def _report_js() -> str:
     });
     document.querySelectorAll(".price-input").forEach(function (input) {
       input.addEventListener("input", updateTokenCosts);
+    });
+    document.querySelectorAll(".attempt-tab").forEach(function (button) {
+      button.addEventListener("click", function () {
+        const attempt = button.dataset.attemptTab;
+        document.querySelectorAll(".attempt-tab").forEach(function (item) {
+          item.classList.toggle("active", item === button);
+        });
+        document.querySelectorAll(".attempt-panel").forEach(function (panel) {
+          panel.classList.toggle("active", panel.dataset.attemptPanel === attempt);
+        });
+        frames.forEach(renderFrame);
+      });
     });
     updateTokenCosts();
   }

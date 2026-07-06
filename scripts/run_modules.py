@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Run main.py sequentially for multiple test modules."""
+"""Run main.py sequentially for multiple test modules.
 
-"""
 python scripts/run_modules.py 登录 首页 我的 视频 手表 \
     --continue-on-fail \
     --limit 10 \
-    --file docs/yl.md \
-    -- \
+    --file docs/新用例.md \
     --base-url "https://open.bigmodel.cn/api/paas/v4" \
     --max-steps=8 \
     --model "autoglm-phone" \
-    --apikey "6" --judge-api-key "c"
+    --apikey "6" --judge-api-key "c" --case-retries 2
+
+少数脚本未声明的 main.py 参数仍可放在 -- 后面透传。
 """
 
 from __future__ import annotations
@@ -42,8 +42,8 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     )
     parser.add_argument(
         "--file",
-        default="docs/yl.md",
-        help="测试用例 Markdown 文件，默认 docs/yl.md。",
+        default="docs/新用例.md",
+        help="测试用例 Markdown 文件，默认 docs/新用例.md。",
     )
     parser.add_argument(
         "--priority",
@@ -54,6 +54,50 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         "--limit",
         type=int,
         help="传给 main.py 的每个模块最大用例数。",
+    )
+    parser.add_argument(
+        "--start",
+        type=int,
+        help=(
+            "传给 main.py 的起始位置。注意：对每个模块分别生效，"
+            "例如 --start 11 表示每个模块从筛选后的第 11 条开始。"
+        ),
+    )
+    parser.add_argument(
+        "--case-retries",
+        type=int,
+        help="传给 main.py 的非 PASS 用例重试次数。不传则使用 main.py 默认值。",
+    )
+    parser.add_argument("--base-url", help="传给 main.py 的模型 API base URL。")
+    parser.add_argument("--model", help="传给 main.py 的模型名称。")
+    parser.add_argument("--apikey", help="传给 main.py 的模型 API key。")
+    parser.add_argument("--judge-base-url", help="传给 main.py 的 judge API base URL。")
+    parser.add_argument("--judge-model", help="传给 main.py 的 judge 模型名称。")
+    parser.add_argument("--judge-api-key-env", help="传给 main.py 的 judge API key 环境变量名。")
+    parser.add_argument("--judge-api-key", help="传给 main.py 的 judge API key。")
+    parser.add_argument(
+        "--disable-status-judge",
+        action="store_true",
+        help="传给 main.py，禁用 judge 模型状态判断。",
+    )
+    parser.add_argument("--max-steps", type=int, help="传给 main.py 的每步最大操作数。")
+    parser.add_argument("--device-id", "-d", help="传给 main.py 的设备 ID。")
+    parser.add_argument(
+        "--device-type",
+        choices=["adb", "hdc", "ios"],
+        help="传给 main.py 的设备类型。",
+    )
+    parser.add_argument("--wda-url", help="传给 main.py 的 WebDriverAgent URL。")
+    parser.add_argument(
+        "--lang",
+        choices=["cn", "en"],
+        help="传给 main.py 的提示词语言。",
+    )
+    parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="传给 main.py，减少输出。",
     )
     parser.add_argument(
         "--artifact-prefix",
@@ -101,8 +145,21 @@ def has_option(args: list[str], option: str) -> bool:
     return option in args or any(arg.startswith(option + "=") for arg in args)
 
 
+def append_option(
+    cmd: list[str], extra: list[str], option: str, value: str | int | None
+) -> None:
+    if value is not None and not has_option(extra, option):
+        cmd.extend([option, str(value)])
+
+
+def append_flag(cmd: list[str], extra: list[str], option: str, enabled: bool) -> None:
+    if enabled and not has_option(extra, option):
+        cmd.append(option)
+
+
 def build_command(
     *,
+    args: argparse.Namespace,
     python_bin: str,
     main_py: str,
     file_path: str,
@@ -110,6 +167,8 @@ def build_command(
     module_index: int,
     priority: list[str] | None,
     limit: int | None,
+    start: int | None,
+    case_retries: int | None,
     artifact_prefix: str,
     extra: list[str],
 ) -> list[str]:
@@ -125,6 +184,10 @@ def build_command(
         cmd.extend(["--priority", item])
     if limit is not None:
         cmd.extend(["--limit", str(limit)])
+    if start is not None:
+        cmd.extend(["--start", str(start)])
+    if case_retries is not None and not has_option(extra, "--case-retries"):
+        cmd.extend(["--case-retries", str(case_retries)])
     if not has_option(extra, "--artifact-name"):
         cmd.extend(
             [
@@ -132,6 +195,20 @@ def build_command(
                 f"{artifact_prefix}_{module_index:02d}_{safe_name(module)}",
             ]
         )
+    append_option(cmd, extra, "--base-url", args.base_url)
+    append_option(cmd, extra, "--model", args.model)
+    append_option(cmd, extra, "--apikey", args.apikey)
+    append_option(cmd, extra, "--judge-base-url", args.judge_base_url)
+    append_option(cmd, extra, "--judge-model", args.judge_model)
+    append_option(cmd, extra, "--judge-api-key-env", args.judge_api_key_env)
+    append_option(cmd, extra, "--judge-api-key", args.judge_api_key)
+    append_option(cmd, extra, "--max-steps", args.max_steps)
+    append_option(cmd, extra, "--device-id", args.device_id)
+    append_option(cmd, extra, "--device-type", args.device_type)
+    append_option(cmd, extra, "--wda-url", args.wda_url)
+    append_option(cmd, extra, "--lang", args.lang)
+    append_flag(cmd, extra, "--disable-status-judge", args.disable_status_judge)
+    append_flag(cmd, extra, "--quiet", args.quiet)
     cmd.extend(extra)
     return cmd
 
@@ -172,6 +249,7 @@ def main() -> int:
     failures: list[tuple[str, int]] = []
     for index, module in enumerate(modules, start=1):
         cmd = build_command(
+            args=args,
             python_bin=args.python,
             main_py=str((root / args.main).resolve()),
             file_path=args.file,
@@ -179,6 +257,8 @@ def main() -> int:
             module_index=index,
             priority=args.priority,
             limit=args.limit,
+            start=args.start,
+            case_retries=args.case_retries,
             artifact_prefix=artifact_prefix,
             extra=extra,
         )
