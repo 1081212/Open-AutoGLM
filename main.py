@@ -1075,6 +1075,7 @@ def check_model_api(base_url: str, model_name: str, api_key: str = "EMPTY") -> b
     except Exception as e:
         print("❌ FAILED")
         error_msg = str(e)
+        print_model_api_exception_detail(e)
 
         # Provide more specific error messages
         if "Connection refused" in error_msg or "Connection error" in error_msg:
@@ -1109,6 +1110,44 @@ def check_model_api(base_url: str, model_name: str, api_key: str = "EMPTY") -> b
         print("❌ Model API check failed. Please fix the issues above.")
 
     return all_passed
+
+
+def print_model_api_exception_detail(exc: Exception) -> None:
+    """Print useful details from OpenAI-compatible API exceptions."""
+    print(f"   Exception: {type(exc).__name__}")
+    print(f"   Message: {exc}")
+
+    status_code = getattr(exc, "status_code", None)
+    if status_code is not None:
+        print(f"   HTTP status: {status_code}")
+
+    request_id = getattr(exc, "request_id", None)
+    if request_id:
+        print(f"   Request ID: {request_id}")
+
+    response = getattr(exc, "response", None)
+    if response is not None:
+        response_status = getattr(response, "status_code", None)
+        if response_status is not None and response_status != status_code:
+            print(f"   Response status: {response_status}")
+
+        response_text = None
+        try:
+            response_text = response.text
+        except Exception:
+            response_text = None
+        if response_text:
+            print("   Response body:")
+            print(_indent_block(_clip_text(response_text.strip(), 2000), "     "))
+
+    body = getattr(exc, "body", None)
+    if body:
+        print("   Error body:")
+        print(_indent_block(_clip_text(str(body), 2000), "     "))
+
+
+def _indent_block(text: str, prefix: str) -> str:
+    return "\n".join(prefix + line for line in text.splitlines())
 
 
 def parse_args() -> argparse.Namespace:
