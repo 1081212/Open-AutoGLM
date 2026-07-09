@@ -1070,6 +1070,7 @@ def check_model_api(base_url: str, model_name: str, api_key: str = "EMPTY") -> b
         else:
             print("❌ FAILED")
             print("   Error: Received empty response from API")
+            print_model_api_response_detail(response)
             all_passed = False
 
     except Exception as e:
@@ -1107,6 +1108,8 @@ def check_model_api(base_url: str, model_name: str, api_key: str = "EMPTY") -> b
     if all_passed:
         print("✅ Model API checks passed!\n")
     else:
+        print(f"   Checked base URL: {base_url}")
+        print(f"   Checked model: {model_name}")
         print("❌ Model API check failed. Please fix the issues above.")
 
     return all_passed
@@ -1116,6 +1119,7 @@ def print_model_api_exception_detail(exc: Exception) -> None:
     """Print useful details from OpenAI-compatible API exceptions."""
     print(f"   Exception: {type(exc).__name__}")
     print(f"   Message: {exc}")
+    print_exception_chain(exc)
 
     status_code = getattr(exc, "status_code", None)
     if status_code is not None:
@@ -1144,6 +1148,45 @@ def print_model_api_exception_detail(exc: Exception) -> None:
     if body:
         print("   Error body:")
         print(_indent_block(_clip_text(str(body), 2000), "     "))
+
+
+def print_exception_chain(exc: Exception) -> None:
+    """Print chained lower-level exceptions when the SDK wraps the root cause."""
+    seen: set[int] = set()
+    current = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+    level = 1
+    while current is not None and id(current) not in seen and level <= 5:
+        seen.add(id(current))
+        print(f"   Cause {level}: {type(current).__name__}: {current}")
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        level += 1
+
+
+def print_model_api_response_detail(response) -> None:
+    """Print details for non-exception API responses that still fail validation."""
+    print("   Response detail:")
+    response_id = getattr(response, "id", None)
+    response_model = getattr(response, "model", None)
+    response_created = getattr(response, "created", None)
+    response_usage = getattr(response, "usage", None)
+    if response_id:
+        print(f"     id: {response_id}")
+    if response_model:
+        print(f"     model: {response_model}")
+    if response_created:
+        print(f"     created: {response_created}")
+    if response_usage:
+        print(f"     usage: {response_usage}")
+
+    choices = getattr(response, "choices", None)
+    print(f"     choices: {choices!r}")
+
+    try:
+        raw = response.model_dump_json(indent=2)
+    except Exception:
+        raw = repr(response)
+    print("   Raw response:")
+    print(_indent_block(_clip_text(raw, 2000), "     "))
 
 
 def _indent_block(text: str, prefix: str) -> str:
