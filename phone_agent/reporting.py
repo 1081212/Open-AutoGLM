@@ -98,6 +98,9 @@ class CaseAttemptReport:
     test_steps: list[TestStepArtifact] = field(default_factory=list)
     steps: list[StepArtifact] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
+    logcat: str | None = None
+    logcat_size: int = 0
+    logcat_error: str | None = None
 
 
 @dataclass
@@ -167,6 +170,9 @@ class TestRunReporter:
         self.current_attempt: CaseAttemptReport | None = None
         self.current_test_step_index: int | None = None
         self._case_step_counter = 0
+        self._logcat_process: subprocess.Popen[Any] | None = None
+        self._logcat_file: Any | None = None
+        self._logcat_capture_path: Path | None = None
         self.run_started_at = _now()
         self.environment: dict[str, Any] = self._collect_environment()
 
@@ -209,6 +215,7 @@ class TestRunReporter:
                 self._collect_app_info(package_name)
             )
         self._write_run_metadata()
+        self._start_logcat_capture(attempt_report)
         return case
 
     def set_test_steps(self, steps: list[dict[str, Any]]) -> None:
@@ -354,6 +361,10 @@ class TestRunReporter:
             self.current_attempt.status = attempt_status
             self.current_attempt.result_message = result_message
             self.current_attempt.finished_at = finished_at
+            self._stop_logcat_capture(
+                keep=attempt_status != "PASS",
+                attempt=self.current_attempt,
+            )
 
         selected_attempt = self.current_attempt
         if case.attempts:
@@ -377,6 +388,11 @@ class TestRunReporter:
         return case.status
 
     def finish_run(self) -> None:
+        if self._logcat_process or self._logcat_file:
+            self._stop_logcat_capture(
+                keep=True,
+                attempt=self.current_attempt,
+            )
         self._write_run_metadata()
         self._write_summary()
         self._write_summary_html()
@@ -506,6 +522,105 @@ class TestRunReporter:
         except Exception:
             return ""
 
+    def _adb_command(self, args: list[str]) -> list[str]:
+        cmd = ["adb"]
+        if self.device_id:
+            cmd.extend(["-s", self.device_id])
+        return [*cmd, *args]
+
+    def _start_logcat_capture(self, attempt: CaseAttemptReport) -> None:
+        """Clear Android logs and start an isolated capture for one attempt."""
+        if self.device_type != "adb":
+            return
+        if self._logcat_process or self._logcat_file:
+            self._stop_logcat_capture(
+                keep=True,
+                attempt=self.current_attempt,
+            )
+
+        capture_path = Path(attempt.artifacts_dir) / "logcat.capture"
+        try:
+            cleared = subprocess.run(
+                self._adb_command(["logcat", "-b", "all", "-c"]),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=15,
+            )
+            if cleared.returncode != 0:
+                detail = (cleared.stderr or cleared.stdout or "unknown error").strip()
+                attempt.logcat_error = f"清空 logcat 失败: {detail}"
+                return
+
+            self._logcat_file = capture_path.open("wb")
+            self._logcat_capture_path = capture_path
+            self._logcat_process = subprocess.Popen(
+                self._adb_command(["logcat", "-b", "all", "-v", "threadtime"]),
+                stdout=self._logcat_file,
+                stderr=subprocess.STDOUT,
+            )
+            print(f"Logcat capture started: {capture_path}")
+        except Exception as exc:
+            attempt.logcat_error = f"启动 logcat 采集失败: {exc}"
+            self._close_logcat_file()
+            try:
+                capture_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _stop_logcat_capture(
+        self,
+        keep: bool,
+        attempt: CaseAttemptReport | None,
+    ) -> None:
+        """Stop the active adb client and keep its output only for non-PASS attempts."""
+        process = self._logcat_process
+        capture_path = self._logcat_capture_path
+        self._logcat_process = None
+        self._logcat_capture_path = None
+        if process:
+            try:
+                process.terminate()
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3)
+            except Exception as exc:
+                if attempt and not attempt.logcat_error:
+                    attempt.logcat_error = f"停止 logcat 采集失败: {exc}"
+        self._close_logcat_file()
+
+        if not capture_path:
+            return
+        if not keep:
+            try:
+                capture_path.unlink(missing_ok=True)
+            except OSError as exc:
+                if attempt:
+                    attempt.logcat_error = f"删除 PASS 日志失败: {exc}"
+            return
+
+        final_path = capture_path.with_name("logcat.txt")
+        try:
+            capture_path.replace(final_path)
+            if attempt:
+                log_case_dir = capture_path.parent.parent
+                attempt.logcat = str(final_path.relative_to(log_case_dir))
+                attempt.logcat_size = final_path.stat().st_size
+            print(f"Logcat retained: {final_path}")
+        except OSError as exc:
+            if attempt:
+                attempt.logcat_error = f"保留 logcat 失败: {exc}"
+
+    def _close_logcat_file(self) -> None:
+        log_file = self._logcat_file
+        self._logcat_file = None
+        if log_file:
+            try:
+                log_file.close()
+            except OSError:
+                pass
+
     def _run_wda(self, endpoint: str) -> str:
         if self.device_type != "ios":
             return ""
@@ -579,6 +694,23 @@ class TestRunReporter:
         if case.issues:
             lines.extend(["## Issues", ""])
             lines.extend(f"- {issue}" for issue in case.issues)
+            lines.append("")
+        retained_logs = [attempt for attempt in _case_attempts(case) if attempt.logcat]
+        log_errors = [
+            attempt for attempt in _case_attempts(case) if attempt.logcat_error
+        ]
+        if retained_logs or log_errors:
+            lines.extend(["## Android Logs", ""])
+            for attempt in retained_logs:
+                lines.append(
+                    f"- Attempt {attempt.attempt}: [{attempt.logcat}]({attempt.logcat}) "
+                    f"({_format_bytes(attempt.logcat_size)})"
+                )
+            for attempt in log_errors:
+                lines.append(
+                    f"- Attempt {attempt.attempt} collection error: "
+                    f"{attempt.logcat_error}"
+                )
             lines.append("")
         if case.test_steps:
             usage = _judge_usage_for_case(case)
@@ -688,6 +820,7 @@ class TestRunReporter:
             f"<dt>Type</dt><dd>{_h(meta.get('rule_type') or '-')}</dd>",
             f"<dt>Priority</dt><dd>{_h(meta.get('priority') or '-')}</dd>",
             f"<dt>Module</dt><dd>{_h(meta.get('module') or '-')}</dd>",
+            f"<dt>Test Type</dt><dd>{_h(' / '.join(meta.get('test_types') or []) or '-')}</dd>",
             f"<dt>Duration</dt><dd>{_h(_case_duration(case))}</dd>",
             "</dl>",
             "</section>",
@@ -966,6 +1099,7 @@ def _build_summary_html(
     duration = _run_duration(cases)
     judge_usage = _judge_usage_for_run(cases)
     vision_usage = _vision_usage_for_run(cases)
+    metadata = {case.case_id: _case_metadata(case) for case in cases}
 
     lines = [
         "<!doctype html>",
@@ -980,7 +1114,7 @@ def _build_summary_html(
         '<main class="shell">',
         '<aside class="sidebar">',
         '<div class="brand"><span class="brand-mark"></span><div><strong>Test Report</strong><small>自动化测试报告</small></div></div>',
-        '<nav class="side-nav"><a href="#overview">总览</a><a href="#tokens">Token 成本</a><a href="#cases">全部用例</a><a href="#defects">非 PASS 用例</a><a href="#environment">环境信息</a></nav>',
+        '<nav class="side-nav"><a href="#overview">总览</a><a href="#module-stats">模块统计</a><a href="#tokens">Token 成本</a><a href="#cases">搜索与筛选</a><a href="#defects">非 PASS 用例</a><a href="#environment">环境信息</a></nav>',
         '<div class="side-foot">生成时间<br>' + _h(run_started_at) + "</div>",
         "</aside>",
         '<section class="content">',
@@ -1001,25 +1135,45 @@ def _build_summary_html(
         _summary_tile("Vision Tokens", str(vision_usage["total"]), "视觉执行模型总消耗", "other"),
         _summary_tile("Judge Tokens", str(judge_usage["total"]), "文本判定模型总消耗", "other"),
         "</section>",
+        _module_statistics_html(cases),
         _token_cost_panel(vision_usage, judge_usage),
         '<section class="panel split-panel">',
         '<div><h2>Status Overview</h2><p class="subtle">按最终状态聚合，便于先判断本轮执行质量。</p></div>',
         _status_bar(pass_count, fail_count, blocked_count, other_count),
         "</section>",
         '<section id="cases" class="panel">',
-        '<div class="section-head"><div><h2>全部用例</h2><p class="subtle">点击详情查看完整步骤、截图和动作记录。</p></div></div>',
+        '<div class="section-head"><div><h2>搜索与筛选</h2><p class="subtle">可组合筛选状态、模块、优先级、规则类型和测试类型。</p></div><span id="case-result-count" class="count-pill"></span></div>',
+        _case_filter_html(cases),
+        '<div id="case-filter-empty" class="empty-state filter-empty"><strong>没有匹配的测试用例</strong><span>请调整关键词或筛选条件。</span></div>',
         '<div class="case-list">',
     ]
     for case in cases:
+        meta = metadata[case.case_id]
         report_link = f"{case.case_id}/report.html"
         issue_step = _find_issue_step(case)
         reason = _issue_reason(case, issue_step) if case.status != "PASS" else case.result_message or "Passed"
         case_usage = _judge_usage_for_case(case)
         case_vision_usage = _vision_usage_for_case(case)
+        test_types = meta.get("test_types") or []
+        tag_labels = [
+            meta.get("module") or "未分模块",
+            meta.get("priority") or "无优先级",
+            meta.get("rule_type") or "无规则类型",
+            *test_types,
+        ]
+        tags_html = "".join(
+            f'<span class="case-tag">{_h(str(label))}</span>' for label in tag_labels
+        )
         lines.append(
-            '<a class="case-row" href="' + _h(report_link) + '">'
+            '<a class="case-row" href="' + _h(report_link) + '" '
+            f'data-search="{_h((case.case_id + " " + _display_title(case)).lower())}" '
+            f'data-status="{_h(case.status)}" '
+            f'data-module="{_h(str(meta.get("module") or ""))}" '
+            f'data-priority="{_h(str(meta.get("priority") or ""))}" '
+            f'data-rule-type="{_h(str(meta.get("rule_type") or ""))}" '
+            f'data-test-types="{_h("|".join(test_types))}">'
             f'<span class="status-dot {case.status.lower()}"></span>'
-            f'<span class="case-name"><strong>{_h(case.case_id)}</strong><em>{_h(_display_title(case))}</em></span>'
+            f'<span class="case-name"><strong>{_h(case.case_id)}</strong><em>{_h(_display_title(case))}</em><span class="case-tags">{tags_html}</span></span>'
             f'<span class="case-steps">{_case_step_count(case)} · Attempts {_attempt_count(case)} · {_h(_case_duration(case))} · Vision {case_vision_usage["total"]} · Judge {case_usage["total"]}</span>'
             f'<span class="case-reason">{_h(_shorten(reason, 110))}</span>'
             f'<span class="status {case.status.lower()}">{_h(case.status)}</span>'
@@ -1076,6 +1230,109 @@ def _summary_tile(label: str, value: str, note: str, tone: str) -> str:
         f"<strong>{_h(value)}</strong>"
         f"<em>{_h(note)}</em>"
         "</article>"
+    )
+
+
+def _case_filter_html(cases: list[CaseReport]) -> str:
+    metadata = [_case_metadata(case) for case in cases]
+    statuses = sorted({case.status for case in cases if case.status})
+    modules = sorted({str(item["module"]) for item in metadata if item.get("module")})
+    priorities = sorted(
+        {str(item["priority"]) for item in metadata if item.get("priority")}
+    )
+    rule_types = sorted(
+        {str(item["rule_type"]) for item in metadata if item.get("rule_type")}
+    )
+    test_types = sorted(
+        {
+            str(label)
+            for item in metadata
+            for label in (item.get("test_types") or [])
+        }
+    )
+    return "\n".join(
+        [
+            '<div class="case-filters">',
+            '<label class="search-field"><span>用例编号或标题</span><input id="case-search" type="search" placeholder="例如 TC-WEARFIT-WATCH-095"></label>',
+            _filter_select("case-status-filter", "状态", statuses),
+            _filter_select("case-module-filter", "关联模块", modules),
+            _filter_select("case-priority-filter", "优先级", priorities),
+            _filter_select("case-rule-filter", "规则类型", rule_types),
+            _filter_select("case-test-type-filter", "测试类型", test_types),
+            '<button id="case-filter-reset" class="filter-reset" type="button">重置筛选</button>',
+            "</div>",
+        ]
+    )
+
+
+def _filter_select(element_id: str, label: str, values: list[str]) -> str:
+    options = ['<option value="">全部</option>']
+    options.extend(f'<option value="{_h(value)}">{_h(value)}</option>' for value in values)
+    return (
+        f'<label class="filter-field"><span>{_h(label)}</span>'
+        f'<select id="{_h(element_id)}">{"".join(options)}</select></label>'
+    )
+
+
+def _module_statistics_html(cases: list[CaseReport]) -> str:
+    grouped: dict[str, list[CaseReport]] = {}
+    for case in cases:
+        module = str(_case_metadata(case).get("module") or "未分模块")
+        grouped.setdefault(module, []).append(case)
+    rows: list[str] = []
+    for module, module_cases in sorted(grouped.items()):
+        total = len(module_cases)
+        counts = {
+            status: sum(1 for case in module_cases if case.status == status)
+            for status in ("PASS", "FAIL", "BLOCKED", "REVIEW")
+        }
+        other = total - sum(counts.values())
+        priorities = _metadata_label_counts(module_cases, "priority")
+        rules = _metadata_label_counts(module_cases, "rule_type")
+        test_types = _metadata_label_counts(module_cases, "test_types")
+        pass_rate = round(counts["PASS"] / total * 100) if total else 0
+        rows.append(
+            "<tr>"
+            f"<td><strong>{_h(module)}</strong></td><td>{total}</td>"
+            f'<td class="stat-pass">{counts["PASS"]}</td>'
+            f'<td class="stat-fail">{counts["FAIL"]}</td>'
+            f'<td class="stat-blocked">{counts["BLOCKED"]}</td>'
+            f'<td class="stat-other">{counts["REVIEW"] + other}</td>'
+            f"<td>{pass_rate}%</td>"
+            f"<td>{_label_counts_html(priorities)}</td>"
+            f"<td>{_label_counts_html(rules)}</td>"
+            f"<td>{_label_counts_html(test_types)}</td>"
+            "</tr>"
+        )
+    body = "".join(rows) or '<tr><td colspan="10">暂无用例</td></tr>'
+    return "\n".join(
+        [
+            '<section id="module-stats" class="panel module-stats">',
+            '<div class="section-head"><div><h2>模块统计</h2><p class="subtle">按关联模块汇总执行结论及标签分布。</p></div></div>',
+            '<div class="stats-table-wrap"><table class="stats-table">',
+            '<thead><tr><th>模块</th><th>总数</th><th>PASS</th><th>FAIL</th><th>BLOCKED</th><th>其他</th><th>通过率</th><th>优先级</th><th>规则类型</th><th>测试类型</th></tr></thead>',
+            f"<tbody>{body}</tbody></table></div></section>",
+        ]
+    )
+
+
+def _metadata_label_counts(cases: list[CaseReport], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for case in cases:
+        value = _case_metadata(case).get(key)
+        values = value if isinstance(value, list) else [value]
+        for label in values:
+            if label:
+                counts[str(label)] = counts.get(str(label), 0) + 1
+    return counts
+
+
+def _label_counts_html(counts: dict[str, int]) -> str:
+    if not counts:
+        return '<span class="muted">-</span>'
+    return "".join(
+        f'<span class="stat-tag">{_h(label)} {count}</span>'
+        for label, count in sorted(counts.items())
     )
 
 
@@ -1218,6 +1475,7 @@ def _render_attempt_html(
 
     vision_total = sum(step.vision_total_tokens for step in attempt.steps)
     judge_total = sum(step.judge_total_tokens for step in attempt.test_steps)
+    logcat_html = _render_logcat_html(case, attempt)
     return "\n".join(
         [
             f'<div class="attempt-panel{active_class}" data-attempt-panel="{attempt.attempt}">',
@@ -1228,10 +1486,57 @@ def _render_attempt_html(
             f"<span>Vision {vision_total}</span>",
             f"<span>Judge {judge_total}</span>",
             "</div>",
+            logcat_html,
             *model_html,
             "</div>",
         ]
     )
+
+
+def _render_logcat_html(case: CaseReport, attempt: CaseAttemptReport) -> str:
+    if not attempt.logcat and not attempt.logcat_error:
+        return ""
+    parts = ['<section class="logcat-panel">', '<div class="section-head">']
+    parts.append('<div><h3>Android Logcat</h3><p class="subtle">仅非 PASS Attempt 保留。</p></div>')
+    if attempt.logcat:
+        parts.append(
+            f'<a class="logcat-link" href="{_h(attempt.logcat)}">查看完整日志 · '
+            f'{_h(_format_bytes(attempt.logcat_size))}</a>'
+        )
+    parts.append("</div>")
+    if attempt.logcat_error:
+        parts.append(f'<div class="logcat-error">{_h(attempt.logcat_error)}</div>')
+    if attempt.logcat:
+        log_path = Path(case.artifacts_dir) / attempt.logcat
+        preview = _read_log_tail(log_path)
+        if preview:
+            parts.append('<details><summary>查看日志末尾（最多 400 行）</summary>')
+            parts.append(f'<pre class="logcat-preview">{_h(preview)}</pre></details>')
+    parts.append("</section>")
+    return "\n".join(parts)
+
+
+def _read_log_tail(path: Path, max_lines: int = 400, max_bytes: int = 256_000) -> str:
+    try:
+        with path.open("rb") as file:
+            size = path.stat().st_size
+            file.seek(max(0, size - max_bytes))
+            data = file.read()
+        text = data.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        if size > max_bytes and lines:
+            lines = lines[1:]
+        return "\n".join(lines[-max_lines:])
+    except OSError:
+        return ""
+
+
+def _format_bytes(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
 
 
 def _render_test_step_html(
@@ -1352,19 +1657,36 @@ def _find_issue_test_step(case: CaseReport) -> TestStepArtifact | None:
     return None
 
 
-def _case_metadata(case: CaseReport) -> dict[str, str | None]:
+def _case_metadata(case: CaseReport) -> dict[str, Any]:
     match = re.search(r"^(TC-WEARFIT-(.+)-(\d{3})-(normal|audio))$", case.case_id)
     module = None
     rule_type = None
     if match:
         module = match.group(2)
         rule_type = match.group(4)
-    priority_match = re.search(r"^\s*-\s*优先级\s*[:：]\s*(.+?)\s*$", case.task, re.MULTILINE)
+    priority = _task_list_field(case.task, "优先级")
+    declared_module = _task_list_field(case.task, "关联模块")
+    test_type = _task_list_field(case.task, "测试类型") or ""
+    test_types = [
+        value.strip()
+        for value in re.split(r"\s*[/、|,，]\s*", test_type)
+        if value.strip()
+    ]
     return {
-        "module": module,
+        "module": declared_module or module,
         "rule_type": rule_type,
-        "priority": priority_match.group(1).strip() if priority_match else None,
+        "priority": priority,
+        "test_types": test_types,
     }
+
+
+def _task_list_field(task: str, field_name: str) -> str | None:
+    match = re.search(
+        rf"^\s*-\s*{re.escape(field_name)}\s*[:：]\s*(.+?)\s*$",
+        task,
+        re.MULTILINE,
+    )
+    return match.group(1).strip() if match else None
 
 
 def _case_duration(case: CaseReport) -> str:
@@ -1963,6 +2285,78 @@ p { margin: 8px 0; }
 .status.unknown,
 .status.step_limit { background: var(--review); }
 .status.running { background: var(--other); }
+.case-filters {
+  display: grid;
+  grid-template-columns: minmax(240px, 2fr) repeat(5, minmax(120px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 16px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+.search-field,
+.filter-field { display: grid; gap: 5px; }
+.search-field span,
+.filter-field span {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+.search-field input,
+.filter-field select {
+  width: 100%;
+  height: 40px;
+  border: 1px solid #cbd5e1;
+  border-radius: 9px;
+  padding: 0 10px;
+  color: var(--text);
+  background: #fff;
+  font: inherit;
+}
+.search-field input:focus,
+.filter-field select:focus {
+  outline: 2px solid #bfdbfe;
+  border-color: #60a5fa;
+}
+.filter-reset {
+  height: 40px;
+  border: 1px solid #cbd5e1;
+  border-radius: 9px;
+  padding: 0 14px;
+  color: #334155;
+  background: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.filter-reset:hover { background: #eef2ff; border-color: #93c5fd; }
+.filter-empty { display: none; margin-bottom: 12px; }
+.filter-empty.visible { display: grid; }
+.stats-table-wrap { overflow-x: auto; }
+.stats-table { width: 100%; min-width: 1050px; border-collapse: collapse; }
+.stats-table th,
+.stats-table td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.stats-table th { color: #475569; background: #f8fafc; font-size: 12px; white-space: nowrap; }
+.stats-table .stat-pass { color: var(--pass); font-weight: 800; }
+.stats-table .stat-fail { color: var(--fail); font-weight: 800; }
+.stats-table .stat-blocked { color: var(--blocked); font-weight: 800; }
+.stats-table .stat-other { color: var(--review); font-weight: 800; }
+.stat-tag,
+.case-tag {
+  display: inline-flex;
+  margin: 3px 4px 0 0;
+  border: 1px solid #dbeafe;
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: #1e40af;
+  background: #eff6ff;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.case-tags { display: flex; flex-wrap: wrap; margin-top: 5px; }
 .case-list { display: grid; gap: 8px; }
 .case-row {
   display: grid;
@@ -1975,6 +2369,7 @@ p { margin: 8px 0; }
   background: #fff;
   color: var(--text);
 }
+.case-row[hidden] { display: none; }
 .case-row:hover {
   border-color: #93c5fd;
   box-shadow: 0 10px 26px rgba(37, 99, 235, .08);
@@ -2227,6 +2622,24 @@ pre {
   font-size: 12px;
   font-weight: 700;
 }
+.logcat-panel {
+  margin: 12px 0 16px;
+  padding: 14px;
+  border: 1px solid #fed7aa;
+  border-radius: 12px;
+  background: #fff7ed;
+}
+.logcat-panel .section-head { margin-bottom: 8px; }
+.logcat-link { font-weight: 800; }
+.logcat-error {
+  margin: 8px 0;
+  border-radius: 8px;
+  padding: 9px 10px;
+  color: #991b1b;
+  background: #fef2f2;
+}
+.logcat-panel summary { cursor: pointer; color: #9a3412; font-weight: 700; }
+.logcat-preview { max-height: 480px; color: #e2e8f0; background: #0f172a; }
 .step-card {
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -2434,9 +2847,12 @@ pre {
   .defect-card { grid-template-columns: 1fr; }
   .step-card { grid-template-columns: 1fr; }
   .env-list, .step-meta { grid-template-columns: 1fr; }
+  .case-filters { grid-template-columns: 1fr; }
 }
-@media (max-width: 1100px) {
+@media (min-width: 761px) and (max-width: 1100px) {
   .overview-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .case-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .search-field { grid-column: 1 / -1; }
 }
 """
 
@@ -2521,6 +2937,33 @@ def _report_js() -> str:
   }
 
   function init() {
+    function updateCaseFilters() {
+      const search = (document.getElementById("case-search") || {}).value || "";
+      const status = (document.getElementById("case-status-filter") || {}).value || "";
+      const module = (document.getElementById("case-module-filter") || {}).value || "";
+      const priority = (document.getElementById("case-priority-filter") || {}).value || "";
+      const ruleType = (document.getElementById("case-rule-filter") || {}).value || "";
+      const testType = (document.getElementById("case-test-type-filter") || {}).value || "";
+      const query = search.trim().toLocaleLowerCase();
+      const rows = Array.from(document.querySelectorAll(".case-row"));
+      let visible = 0;
+      rows.forEach(function (row) {
+        const testTypes = (row.dataset.testTypes || "").split("|");
+        const matches = (!query || (row.dataset.search || "").includes(query))
+          && (!status || row.dataset.status === status)
+          && (!module || row.dataset.module === module)
+          && (!priority || row.dataset.priority === priority)
+          && (!ruleType || row.dataset.ruleType === ruleType)
+          && (!testType || testTypes.includes(testType));
+        row.hidden = !matches;
+        if (matches) visible += 1;
+      });
+      const count = document.getElementById("case-result-count");
+      if (count) count.textContent = "显示 " + visible + " / " + rows.length;
+      const empty = document.getElementById("case-filter-empty");
+      if (empty) empty.classList.toggle("visible", rows.length > 0 && visible === 0);
+    }
+
     function updateTokenCosts() {
       let totalCost = 0;
       document.querySelectorAll(".token-row").forEach(function (row) {
@@ -2578,6 +3021,35 @@ def _report_js() -> str:
         frames.forEach(renderFrame);
       });
     });
+    [
+      "case-search",
+      "case-status-filter",
+      "case-module-filter",
+      "case-priority-filter",
+      "case-rule-filter",
+      "case-test-type-filter"
+    ].forEach(function (id) {
+      const control = document.getElementById(id);
+      if (control) control.addEventListener("input", updateCaseFilters);
+    });
+    const reset = document.getElementById("case-filter-reset");
+    if (reset) {
+      reset.addEventListener("click", function () {
+        [
+          "case-search",
+          "case-status-filter",
+          "case-module-filter",
+          "case-priority-filter",
+          "case-rule-filter",
+          "case-test-type-filter"
+        ].forEach(function (id) {
+          const control = document.getElementById(id);
+          if (control) control.value = "";
+        });
+        updateCaseFilters();
+      });
+    }
+    updateCaseFilters();
     updateTokenCosts();
   }
 
