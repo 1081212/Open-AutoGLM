@@ -2,6 +2,8 @@
 """
 Phone Agent Web Server - Expose phone agent as a web service.
 
+Legacy local-only entry point. It is not the platform Worker.
+
 Usage:
     python phoneagent_server.py
 
@@ -23,12 +25,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 import json
+from uuid import uuid4
 
 from phone_agent import PhoneAgent
 from phone_agent.agent import AgentConfig
 from phone_agent.agent_ios import IOSAgentConfig, IOSPhoneAgent
 from phone_agent.device_factory import DeviceType, set_device_type
 from phone_agent.model import ModelConfig
+from phone_agent.reporting import TestRunReporter
 
 # Import check functions from main
 from main import check_system_requirements, check_model_api
@@ -62,9 +66,9 @@ def initialize_agent():
     global _agent
 
     # Get configuration from environment
-    base_url = os.getenv("PHONE_AGENT_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
-    model_name = os.getenv("PHONE_AGENT_MODEL", "autoglm-phone")
-    api_key = os.getenv("PHONE_AGENT_API_KEY", "6e8c17ba502941e68724c6e8cbc0ba1d.OgUTQLcvN52jyN1M")
+    base_url = os.getenv("PHONE_AGENT_BASE_URL", "http://localhost:8000/v1")
+    model_name = os.getenv("PHONE_AGENT_MODEL", "autoglm-phone-9b")
+    api_key = os.getenv("PHONE_AGENT_API_KEY", "EMPTY")
     max_steps = int(os.getenv("PHONE_AGENT_MAX_STEPS", "100"))
     device_id = os.getenv("PHONE_AGENT_DEVICE_ID")
     device_type_str = os.getenv("PHONE_AGENT_DEVICE_TYPE", "adb")
@@ -167,7 +171,8 @@ async def root():
     return {
         "service": "Phone Agent API",
         "status": "running",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "legacy": True,
     }
 
 
@@ -197,29 +202,29 @@ async def run_task(request: RunRequest):
     if not request.prompt or not request.prompt.strip():
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
 
-    try:
-        print(f"\n>>> Received task: {request.prompt}")
-        result = _agent.run(request.prompt)
-        _agent.reset()  # Reset agent state after each task
-        print(f">>> Task completed: {result}\n")
-        print(RunResponse(
-            result=result,
-            success=True
-        ))
-
-        return RunResponse(
-            result=result,
-            success=True
-        )
-    except Exception as e:
-        error_msg = str(e)
-        print(f">>> Task failed: {error_msg}\n")
-
-        # Return error response instead of raising exception
-        return RunResponse(
-            result=f"Error: {error_msg}",
-            success=False
-        )
+    lock = _agent_lock
+    if lock is None:
+        raise HTTPException(status_code=503, detail="Agent lock not initialized")
+    async with lock:
+        agent = _agent
+        reporter = _new_legacy_reporter(agent)
+        original_auto_manage = agent.agent_config.auto_manage_report_case
+        agent.agent_config.reporter = reporter
+        agent.agent_config.auto_manage_report_case = True
+        try:
+            print(f"\n>>> Received task: {request.prompt}")
+            result = await asyncio.to_thread(agent.run, request.prompt)
+            print(f">>> Task completed: {result}\n")
+            return RunResponse(result=result, success=True)
+        except Exception as e:
+            error_msg = str(e)
+            print(f">>> Task failed: {error_msg}\n")
+            return RunResponse(result=f"Error: {error_msg}", success=False)
+        finally:
+            reporter.finish_run()
+            agent.agent_config.reporter = None
+            agent.agent_config.auto_manage_report_case = original_auto_manage
+            agent.reset()
 
 
 @app.post("/run/stream")
@@ -271,6 +276,11 @@ async def run_task_stream(request: RunRequest):
                 return
 
             agent.reset()
+            reporter = _new_legacy_reporter(agent)
+            original_auto_manage = agent.agent_config.auto_manage_report_case
+            agent.agent_config.reporter = reporter
+            agent.agent_config.auto_manage_report_case = False
+            reporter.start_case(request.prompt, 1)
 
             step_no = 0
 
@@ -303,6 +313,7 @@ async def run_task_stream(request: RunRequest):
                     })
 
                     if result.finished:
+                        reporter.finish_case(result.message or "Task completed")
                         yield sse_event({
                             "type": "done",
                             "result": result.message or "Task completed",
@@ -317,6 +328,8 @@ async def run_task_stream(request: RunRequest):
                     "success": False,
                     "steps": step_no,
                 })
+                if reporter.current_case:
+                    reporter.finish_case("Max steps reached", max_steps_reached=True)
             except Exception as e:
                 error_msg = str(e)
                 print(f">>> Task failed: {error_msg}\n")
@@ -327,6 +340,11 @@ async def run_task_stream(request: RunRequest):
                     "steps": step_no,
                 })
             finally:
+                if reporter.current_case:
+                    reporter.finish_case("STATUS: REVIEW\nREASON: Legacy stream interrupted")
+                reporter.finish_run()
+                agent.agent_config.reporter = None
+                agent.agent_config.auto_manage_report_case = original_auto_manage
                 agent.reset()
 
     return StreamingResponse(
@@ -337,6 +355,18 @@ async def run_task_stream(request: RunRequest):
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no"  # Disable nginx buffering
         }
+    )
+
+
+def _new_legacy_reporter(agent) -> TestRunReporter:
+    return TestRunReporter(
+        artifact_name=f"legacy-server-{uuid4()}",
+        base_dir=os.getenv("PHONE_AGENT_ARTIFACT_DIR", "test_artifacts"),
+        device_type=os.getenv("PHONE_AGENT_DEVICE_TYPE", "adb"),
+        device_id=agent.agent_config.device_id,
+        model_name=agent.model_config.model_name,
+        base_url=agent.model_config.base_url,
+        wda_url=getattr(agent.agent_config, "wda_url", None),
     )
 
 

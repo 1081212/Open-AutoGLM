@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 
 FAIL_KEYWORDS = (
@@ -52,8 +53,38 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write report metadata without exposing a partially written JSON file."""
+    temp_path = path.with_name(f".{path.name}.tmp")
+    with temp_path.open("w", encoding="utf-8") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp_path, path)
+
+
+@dataclass
+class ActionArtifact:
+    action_id: str
+    action_sequence: int
+    agent_step: int
+    test_step_index: int | None
+    action: dict[str, Any] | None
+    success: bool | None
+    message: str | None
+    started_at: str
+    finished_at: str
+    vision_prompt_tokens: int = 0
+    vision_completion_tokens: int = 0
+    vision_cached_tokens: int = 0
+    vision_total_tokens: int = 0
+    model_ttft_ms: int | None = None
+    model_total_ms: int | None = None
+
+
 @dataclass
 class StepArtifact:
+    step_artifact_id: str
     step: int
     screenshot: str | None
     ui_xml: str | None
@@ -69,6 +100,9 @@ class StepArtifact:
     vision_total_tokens: int = 0
     sensitive_screenshot: bool = False
     ui_texts: list[str] = field(default_factory=list)
+    actions: list[ActionArtifact] = field(default_factory=list)
+    model_ttft_ms: int | None = None
+    model_total_ms: int | None = None
 
 
 @dataclass
@@ -108,6 +142,9 @@ class CaseReport:
     case_id: str
     title: str
     task: str
+    execution_case_id: str = ""
+    ordinal: int = 0
+    schema_version: str = "autoglm.local-report.v2"
     status: str = "RUNNING"
     result_message: str | None = None
     started_at: str = field(default_factory=_now)
@@ -176,18 +213,32 @@ class TestRunReporter:
         self.run_started_at = _now()
         self.environment: dict[str, Any] = self._collect_environment()
 
-    def start_case(self, task: str, index: int, attempt: int = 1) -> CaseReport:
+    def start_case(
+        self,
+        task: str,
+        index: int,
+        attempt: int = 1,
+        *,
+        execution_case_id: str | None = None,
+        ordinal: int | None = None,
+    ) -> CaseReport:
         case_id = extract_case_id(task, index)
         title = task.split("：", 1)[0].split(":", 1)[0][:120]
-        case_dir = self.root_dir / case_id
+        execution_key = execution_case_id or f"legacy-{index:04d}"
+        case_dir = self.root_dir / f"{index:04d}_{sanitize_name(execution_key)}"
         (case_dir / "screenshots").mkdir(parents=True, exist_ok=True)
         (case_dir / "ui").mkdir(parents=True, exist_ok=True)
-        case = next((item for item in self.cases if item.case_id == case_id), None)
+        case = next(
+            (item for item in self.cases if item.execution_case_id == execution_key),
+            None,
+        )
         if case is None:
             case = CaseReport(
                 case_id=case_id,
                 title=title,
                 task=task,
+                execution_case_id=execution_key,
+                ordinal=ordinal or index,
                 artifacts_dir=str(case_dir),
             )
             self.cases.append(case)
@@ -313,6 +364,7 @@ class TestRunReporter:
         ui_texts = _extract_ui_texts(xml or "")
 
         artifact = StepArtifact(
+            step_artifact_id=str(uuid4()),
             step=artifact_step,
             screenshot=screenshot_rel,
             ui_xml=ui_rel,
@@ -336,17 +388,45 @@ class TestRunReporter:
         vision_completion_tokens: int = 0,
         vision_cached_tokens: int = 0,
         vision_total_tokens: int = 0,
+        model_ttft_ms: int | None = None,
+        model_total_ms: int | None = None,
     ) -> None:
         if not self.current_case or not self.current_case.steps:
             return
-        artifact = self.current_case.steps[-1]
+        artifact = next(
+            (item for item in reversed(self.current_case.steps) if item.step == step),
+            self.current_case.steps[-1],
+        )
+        now = _now()
+        artifact.actions.append(
+            ActionArtifact(
+                action_id=str(uuid4()),
+                action_sequence=len(artifact.actions) + 1,
+                agent_step=step,
+                test_step_index=artifact.test_step_index,
+                action=action,
+                success=success,
+                message=message,
+                started_at=now,
+                finished_at=now,
+                vision_prompt_tokens=vision_prompt_tokens,
+                vision_completion_tokens=vision_completion_tokens,
+                vision_cached_tokens=vision_cached_tokens,
+                vision_total_tokens=vision_total_tokens,
+                model_ttft_ms=model_ttft_ms,
+                model_total_ms=model_total_ms,
+            )
+        )
+        # Keep the legacy single-action fields readable for old report consumers.
         artifact.action = action
         artifact.action_success = success
         artifact.action_message = message
-        artifact.vision_prompt_tokens = vision_prompt_tokens
-        artifact.vision_completion_tokens = vision_completion_tokens
-        artifact.vision_cached_tokens = vision_cached_tokens
-        artifact.vision_total_tokens = vision_total_tokens
+        artifact.vision_prompt_tokens += vision_prompt_tokens
+        artifact.vision_completion_tokens += vision_completion_tokens
+        artifact.vision_cached_tokens += vision_cached_tokens
+        artifact.vision_total_tokens += vision_total_tokens
+        artifact.model_ttft_ms = model_ttft_ms
+        artifact.model_total_ms = model_total_ms
         if success is False and message:
             self.current_case.issues.append(message)
         self._write_case_json(self.current_case)
@@ -362,7 +442,7 @@ class TestRunReporter:
             self.current_attempt.result_message = result_message
             self.current_attempt.finished_at = finished_at
             self._stop_logcat_capture(
-                keep=attempt_status != "PASS",
+                keep=True,
                 attempt=self.current_attempt,
             )
 
@@ -402,7 +482,14 @@ class TestRunReporter:
     ) -> str:
         if max_steps_reached:
             return "BLOCKED"
-        failed_actions = [s for s in case.steps if s.action_success is False]
+        failed_actions = [
+            action
+            for step in case.steps
+            for action in step.actions
+            if action.success is False
+        ]
+        if not failed_actions:
+            failed_actions = [s for s in case.steps if s.action_success is False]
         if failed_actions:
             return "FAIL"
         step_statuses = [s.status for s in case.test_steps]
@@ -426,6 +513,8 @@ class TestRunReporter:
         explicit = _parse_explicit_status(result_message or "")
         if explicit in {"FAIL", "BLOCKED", "REVIEW"}:
             return explicit
+        if "model error" in (result_message or "").lower():
+            return "REVIEW"
         return "PASS"
 
     def _collect_environment(self) -> dict[str, Any]:
@@ -573,7 +662,7 @@ class TestRunReporter:
         keep: bool,
         attempt: CaseAttemptReport | None,
     ) -> None:
-        """Stop the active adb client and keep its output only for non-PASS attempts."""
+        """Stop the active adb client and retain evidence according to caller policy."""
         process = self._logcat_process
         capture_path = self._logcat_capture_path
         self._logcat_process = None
@@ -643,23 +732,32 @@ class TestRunReporter:
             return ""
 
     def _write_run_metadata(self) -> None:
-        (self.root_dir / "run.json").write_text(
+        _atomic_write_text(
+            self.root_dir / "run.json",
             json.dumps(
                 {
+                    "schema_version": "autoglm.local-run.v2",
                     "environment": self.environment,
-                    "cases": [case.case_id for case in self.cases],
+                    "cases": [
+                        {
+                            "execution_case_id": case.execution_case_id,
+                            "case_id": case.case_id,
+                            "ordinal": case.ordinal,
+                            "directory": _case_dir_name(case),
+                        }
+                        for case in self.cases
+                    ],
                 },
                 ensure_ascii=False,
                 indent=2,
             ),
-            encoding="utf-8",
         )
 
     def _write_case_json(self, case: CaseReport) -> None:
         path = Path(case.artifacts_dir) / "report.json"
-        path.write_text(
+        _atomic_write_text(
+            path,
             json.dumps(asdict(case), ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
 
     def _write_case_markdown(self, case: CaseReport) -> None:
@@ -731,14 +829,25 @@ class TestRunReporter:
             )
         lines.extend(["## Steps", ""])
         for step in case.steps:
-            action = step.action or {}
-            action_name = action.get("action") or action.get("_metadata") or ""
-            lines.append(
-                f"- Step {step.step:03d}: {action_name} | "
-                f"success={step.action_success} | "
-                f"vision_tokens={step.vision_total_tokens} | "
-                f"screenshot={step.screenshot}"
-            )
+            actions = step.actions or []
+            if not actions:
+                action = step.action or {}
+                action_name = action.get("action") or action.get("_metadata") or ""
+                lines.append(
+                    f"- Step {step.step:03d}: {action_name} | "
+                    f"success={step.action_success} | "
+                    f"vision_tokens={step.vision_total_tokens} | "
+                    f"screenshot={step.screenshot}"
+                )
+            for action_item in actions:
+                action = action_item.action or {}
+                action_name = action.get("action") or action.get("_metadata") or ""
+                lines.append(
+                    f"- Step {step.step:03d}.{action_item.action_sequence}: {action_name} | "
+                    f"success={action_item.success} | "
+                    f"vision_tokens={action_item.vision_total_tokens} | "
+                    f"screenshot={step.screenshot}"
+                )
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _write_summary(self) -> None:
@@ -786,11 +895,12 @@ class TestRunReporter:
         lines.append("| --- | --- | ---: | ---: | ---: | --- | --- |")
         for case in self.cases:
             last = case.steps[-1] if case.steps else None
-            screenshot = f"{case.case_id}/{last.screenshot}" if last and last.screenshot else ""
+            case_dir_name = _case_dir_name(case)
+            screenshot = f"{case_dir_name}/{last.screenshot}" if last and last.screenshot else ""
             case_usage = _judge_usage_for_case(case)
             case_vision_usage = _vision_usage_for_case(case)
             lines.append(
-                f"| {case.case_id} | {case.status} | {_attempt_count(case)} | {case_vision_usage['total']} | {case_usage['total']} | {case.case_id}/report.md | {screenshot} |"
+                f"| {case.case_id} | {case.status} | {_attempt_count(case)} | {case_vision_usage['total']} | {case_usage['total']} | {case_dir_name}/report.md | {screenshot} |"
             )
         summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -1099,7 +1209,7 @@ def _build_summary_html(
     duration = _run_duration(cases)
     judge_usage = _judge_usage_for_run(cases)
     vision_usage = _vision_usage_for_run(cases)
-    metadata = {case.case_id: _case_metadata(case) for case in cases}
+    metadata = {case.execution_case_id: _case_metadata(case) for case in cases}
 
     lines = [
         "<!doctype html>",
@@ -1148,8 +1258,8 @@ def _build_summary_html(
         '<div class="case-list">',
     ]
     for case in cases:
-        meta = metadata[case.case_id]
-        report_link = f"{case.case_id}/report.html"
+        meta = metadata[case.execution_case_id]
+        report_link = f"{_case_dir_name(case)}/report.html"
         issue_step = _find_issue_step(case)
         reason = _issue_reason(case, issue_step) if case.status != "PASS" else case.result_message or "Passed"
         case_usage = _judge_usage_for_case(case)
@@ -1433,7 +1543,9 @@ def _status_bar(pass_count: int, fail_count: int, blocked_count: int, other_coun
 
 def _render_step_html(case: CaseReport, step: StepArtifact) -> str:
     screenshot = f"{step.screenshot}" if step.screenshot else ""
-    action = json.dumps(step.action or {}, ensure_ascii=False, indent=2)
+    actions = step.actions or []
+    action_payload: Any = [asdict(item) for item in actions] if actions else (step.action or {})
+    action = json.dumps(action_payload, ensure_ascii=False, indent=2)
     ui_texts = "、".join(step.ui_texts[:30])
     screenshot_html = _screenshot_frame(screenshot, step.action, f"step {step.step} screenshot")
     return "\n".join(
@@ -1588,7 +1700,7 @@ def _render_issue_case_html(case: CaseReport) -> str:
     issue_step = _find_issue_step(case)
     screenshot = ""
     if issue_step and issue_step.screenshot:
-        screenshot = f"{case.case_id}/{issue_step.screenshot}"
+        screenshot = f"{_case_dir_name(case)}/{issue_step.screenshot}"
     reason = _issue_reason(case, issue_step)
     screenshot_html = _screenshot_frame(
         screenshot,
@@ -1619,7 +1731,7 @@ def _render_issue_case_html(case: CaseReport) -> str:
             f"<span>Action</span><code>{_h(action_name)}</code>",
             f"<span>Activity</span><code>{_h((issue_step.current_activity if issue_step else '') or 'unknown')}</code>",
             "</div>",
-            f'<a class="detail-link" href="{_h(case.case_id)}/report.html">查看完整步骤</a>',
+            f'<a class="detail-link" href="{_h(_case_dir_name(case))}/report.html">查看完整步骤</a>',
             "</div>",
             "</article>",
         ]
@@ -1628,7 +1740,7 @@ def _render_issue_case_html(case: CaseReport) -> str:
 
 def _find_issue_step(case: CaseReport) -> StepArtifact | None:
     for step in case.steps:
-        if step.action_success is False:
+        if step.action_success is False or any(action.success is False for action in step.actions):
             return step
     issue_test_step = _find_issue_test_step(case)
     if issue_test_step:
@@ -1658,7 +1770,7 @@ def _find_issue_test_step(case: CaseReport) -> TestStepArtifact | None:
 
 
 def _case_metadata(case: CaseReport) -> dict[str, Any]:
-    match = re.search(r"^(TC-WEARFIT-(.+)-(\d{3})-(normal|audio))$", case.case_id)
+    match = re.search(r"^(TC-WEARFIT-(.+)-(\d{3,})-(normal|audio))$", case.case_id)
     module = None
     rule_type = None
     if match:
@@ -1678,6 +1790,10 @@ def _case_metadata(case: CaseReport) -> dict[str, Any]:
         "priority": priority,
         "test_types": test_types,
     }
+
+
+def _case_dir_name(case: CaseReport) -> str:
+    return Path(case.artifacts_dir).name
 
 
 def _task_list_field(task: str, field_name: str) -> str | None:

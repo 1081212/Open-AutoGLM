@@ -1,7 +1,7 @@
 """Action handler for processing AI model outputs."""
 
 import ast
-import re
+import os
 import subprocess
 import threading
 import time
@@ -12,6 +12,8 @@ from typing import Any, Callable
 
 from phone_agent.config.timing import TIMING_CONFIG
 from phone_agent.device_factory import get_device_factory
+from phone_agent.execution.cancellation import CancellationToken
+from phone_agent.execution.errors import ExecutionError
 
 
 @dataclass
@@ -40,10 +42,12 @@ class ActionHandler:
         device_id: str | None = None,
         confirmation_callback: Callable[[str], bool] | None = None,
         takeover_callback: Callable[[str], None] | None = None,
+        cancellation_token: CancellationToken | None = None,
     ):
         self.device_id = device_id
         self.confirmation_callback = confirmation_callback or self._default_confirmation
         self.takeover_callback = takeover_callback or self._default_takeover
+        self.cancellation_token = cancellation_token or CancellationToken()
 
     def execute(
         self, action: dict[str, Any], screen_width: int, screen_height: int
@@ -59,6 +63,7 @@ class ActionHandler:
         Returns:
             ActionResult indicating success and whether to finish.
         """
+        self.cancellation_token.raise_if_cancelled()
         action_type = action.get("_metadata")
 
         if action_type == "finish":
@@ -85,6 +90,8 @@ class ActionHandler:
 
         try:
             return handler_method(action, screen_width, screen_height)
+        except ExecutionError:
+            raise
         except Exception as e:
             return ActionResult(
                 success=False, should_finish=False, message=f"Action failed: {e}"
@@ -162,19 +169,19 @@ class ActionHandler:
 
         # Switch to ADB keyboard
         original_ime = device_factory.detect_and_set_adb_keyboard(self.device_id)
-        time.sleep(TIMING_CONFIG.action.keyboard_switch_delay)
+        self._interruptible_wait(TIMING_CONFIG.action.keyboard_switch_delay)
 
         # Clear existing text and type new text
         device_factory.clear_text(self.device_id)
-        time.sleep(TIMING_CONFIG.action.text_clear_delay)
+        self._interruptible_wait(TIMING_CONFIG.action.text_clear_delay)
 
         # Handle multiline text by splitting on newlines
         device_factory.type_text(text, self.device_id)
-        time.sleep(TIMING_CONFIG.action.text_input_delay)
+        self._interruptible_wait(TIMING_CONFIG.action.text_input_delay)
 
         # Restore original keyboard
         device_factory.restore_keyboard(original_ime, self.device_id)
-        time.sleep(TIMING_CONFIG.action.keyboard_restore_delay)
+        self._interruptible_wait(TIMING_CONFIG.action.keyboard_restore_delay)
 
         return ActionResult(True, False)
 
@@ -235,8 +242,13 @@ class ActionHandler:
         except ValueError:
             duration = 1.0
 
-        time.sleep(duration)
+        if self.cancellation_token.wait(duration):
+            self.cancellation_token.raise_if_cancelled()
         return ActionResult(True, False)
+
+    def _interruptible_wait(self, seconds: float) -> None:
+        if self.cancellation_token.wait(seconds):
+            self.cancellation_token.raise_if_cancelled()
 
     def _handle_takeover(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle takeover request (login, captcha, etc.)."""
@@ -402,10 +414,7 @@ class ActionHandler:
             )
 
         bounds = element.info.get("bounds") or {}
-        try:
-            x = int((bounds["left"] + bounds["right"]) / 2)
-            y = int((bounds["top"] + bounds["bottom"]) / 2)
-        except KeyError:
+        if not {"left", "right", "top", "bottom"}.issubset(bounds):
             return ActionResult(False, False, "Element bounds are incomplete")
 
         hold_seconds = float(
@@ -420,9 +429,12 @@ class ActionHandler:
 
         hold_thread = threading.Thread(target=hold_button, daemon=True)
         hold_thread.start()
-        time.sleep(press_lead_seconds)
+        self._interruptible_wait(press_lead_seconds)
 
-        result = subprocess.run([player, str(audio_path)], capture_output=True, text=True)
+        result = self._run_process_cancellable(
+            [player, str(audio_path)],
+            timeout=max(hold_seconds + 5, 10),
+        )
         hold_thread.join(timeout=hold_seconds + 2)
         if result.returncode != 0:
             return ActionResult(
@@ -470,6 +482,7 @@ class ActionHandler:
                                 hdc_prefix + ["shell", "input", "keyevent", keycode],
                                 capture_output=True,
                                 text=True,
+                                timeout=15,
                             )
                     else:
                         # Assume it's a numeric code
@@ -484,15 +497,46 @@ class ActionHandler:
                         hdc_prefix + ["shell", "input", "keyevent", keycode],
                         capture_output=True,
                         text=True,
+                        timeout=15,
                     )
         else:
             # ADB devices use standard input keyevent command
-            cmd_prefix = ["adb", "-s", self.device_id] if self.device_id else ["adb"]
-            subprocess.run(
-                cmd_prefix + ["shell", "input", "keyevent", keycode],
-                capture_output=True,
-                text=True,
-            )
+            if os.getenv("AUTOGLM_WORKER_CHILD") == "1":
+                if not self.device_id:
+                    raise ValueError("Worker keyevent requires an explicit ADB serial")
+                from phone_agent.adb.command import AdbCommandAdapter
+
+                AdbCommandAdapter().run(
+                    self.device_id,
+                    ["shell", "input", "keyevent", keycode],
+                    timeout=15,
+                )
+            else:
+                cmd_prefix = ["adb", "-s", self.device_id] if self.device_id else ["adb"]
+                subprocess.run(
+                    cmd_prefix + ["shell", "input", "keyevent", keycode],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+
+    def _run_process_cancellable(self, argv: list[str], *, timeout: float) -> subprocess.CompletedProcess:
+        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        deadline = time.monotonic() + timeout
+        while process.poll() is None:
+            if self.cancellation_token.wait(0.1):
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                self.cancellation_token.raise_if_cancelled()
+            if time.monotonic() >= deadline:
+                process.kill()
+                stdout, stderr = process.communicate()
+                raise TimeoutError(f"Process timed out: {argv[0]}: {stderr or stdout}")
+        stdout, stderr = process.communicate()
+        return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
     @staticmethod
     def _default_confirmation(message: str) -> bool:

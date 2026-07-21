@@ -14,6 +14,7 @@ Environment Variables:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -22,7 +23,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from uuid import uuid4
 
 from openai import OpenAI
 
@@ -33,6 +34,10 @@ from phone_agent.config.apps import list_supported_apps
 from phone_agent.config.apps_harmonyos import list_supported_apps as list_harmonyos_apps
 from phone_agent.config.apps_ios import list_supported_apps as list_ios_apps
 from phone_agent.device_factory import DeviceType, get_device_factory, set_device_type
+from phone_agent.execution.errors import ExecutionError
+from phone_agent.execution.models import CaseOutcome, ExecutionPlan
+from phone_agent.execution.result import AttemptResult
+from phone_agent.execution.task_executor import TaskExecutor
 from phone_agent.gitlab_install import (
     DEFAULT_GITLAB,
     DEFAULT_PROJECT,
@@ -79,7 +84,7 @@ def parse_test_case_heading(task: str) -> tuple[str | None, str | None, str | No
 
     当前只做轻量解析，用于执行前打印和后续 rule 上下文扩展。
     """
-    pattern = re.compile(r"^##\s+(TC-WEARFIT-[A-Za-z0-9]+-\d{3}-(normal|audio))\s+(.+)$")
+    pattern = re.compile(r"^##\s+(TC-WEARFIT-[A-Za-z0-9]+-\d{3,}-(normal|audio))\s+(.+)$")
     for line in task.splitlines():
         match = pattern.match(line.strip())
         if match:
@@ -128,7 +133,7 @@ def parse_test_cases_from_markdown(content: str) -> list[ParsedTestCase]:
     只以二级标题作为用例起始标记，不依赖 --- 分隔线。
     """
     heading_pattern = re.compile(
-        r"^##\s+(TC-WEARFIT-[A-Za-z0-9]+-\d{3}-(normal|audio))\s+(.+)$",
+        r"^##\s+(TC-WEARFIT-[A-Za-z0-9]+-\d{3,}-(normal|audio))\s+(.+)$",
         re.MULTILINE,
     )
     matches = list(heading_pattern.finditer(content))
@@ -605,6 +610,8 @@ def execute_test_case(
     device_type: DeviceType,
     status_judge: StepStatusJudge | None,
     attempt: int = 0,
+    execution_case_id: str | None = None,
+    ordinal: int | None = None,
 ) -> tuple[str, str]:
     """Execute one parsed test case once and return (case_status, result_message)."""
     task = test_case.task
@@ -624,7 +631,13 @@ def execute_test_case(
 
     execution_steps = parse_execution_steps(task) if args.file else []
     if execution_steps:
-        reporter.start_case(test_case.task, index, attempt=attempt + 1)
+        reporter.start_case(
+            test_case.task,
+            index,
+            attempt=attempt + 1,
+            execution_case_id=execution_case_id,
+            ordinal=ordinal,
+        )
         reporter.set_test_steps(
             [
                 {
@@ -781,7 +794,13 @@ def execute_test_case(
         print(f"\nResult {index}/{total_tasks}: {final_result}")
         return case_status, final_result
 
-    reporter.start_case(test_case.task, index, attempt=attempt + 1)
+    reporter.start_case(
+        test_case.task,
+        index,
+        attempt=attempt + 1,
+        execution_case_id=execution_case_id,
+        ordinal=ordinal,
+    )
     result = agent.run(task)
     case_status = "UNKNOWN"
     if reporter.current_case:
@@ -791,6 +810,136 @@ def execute_test_case(
     print(f"\nResult {index}/{total_tasks}: {result}")
     agent.reset()
     return case_status, result
+
+
+def build_legacy_local_plan(
+    test_cases: list[ParsedTestCase],
+    *,
+    args,
+    model_config: ModelConfig,
+    status_judge: StepStatusJudge | None,
+) -> tuple[ExecutionPlan, dict[str, ParsedTestCase]]:
+    """Convert legacy local Markdown input into the shared v1 execution model."""
+    project_id = uuid4()
+    source_suite_id = uuid4()
+    source_suite_version_id = uuid4()
+    case_lookup: dict[str, ParsedTestCase] = {}
+    cases: list[dict[str, object]] = []
+    for ordinal, test_case in enumerate(test_cases, start=1):
+        execution_case_id = uuid4()
+        case_id = uuid4()
+        case_revision_id = uuid4()
+        parsed_steps = parse_execution_steps(test_case.task)
+        if not parsed_steps:
+            parsed_steps = [
+                ParsedExecutionStep(index=1, text=test_case.task)
+            ]
+        case_lookup[str(execution_case_id)] = test_case
+        canonical_code = test_case.case_id or f"LOCAL-{ordinal:04d}"
+        cases.append(
+            {
+                "execution_case_id": str(execution_case_id),
+                "case_id": str(case_id),
+                "case_revision_id": str(case_revision_id),
+                "case_schema_version": "autoglm.case.v1",
+                "parser_version": "python-legacy-local/1",
+                "semantic_hash": "sha256:"
+                + hashlib.sha256(test_case.task.encode("utf-8")).hexdigest(),
+                "canonical_code": canonical_code,
+                "source_case_id": canonical_code,
+                "display_id": canonical_code,
+                "repeat_index": 1,
+                "provenance": [
+                    {
+                        "source_suite_id": str(source_suite_id),
+                        "source_suite_version_id": str(source_suite_version_id),
+                        "source_suite_version_no": 1,
+                        "source_case_id": canonical_code,
+                        "relation": "LOCAL_LEGACY",
+                    }
+                ],
+                "ordinal": ordinal,
+                "title": test_case.title or canonical_code,
+                "rule_type": test_case.rule_type or "normal",
+                "priority": test_case.priority,
+                "module": test_case.module,
+                "goal": extract_markdown_section(test_case.task, "测试目标")
+                or test_case.task,
+                "preconditions": [],
+                "steps": [
+                    {
+                        "step_id": str(uuid4()),
+                        "index": step.index,
+                        "instruction": step.text,
+                        "target_state": step.target_state,
+                        "expected_activity": step.activity,
+                        "conditional": False,
+                    }
+                    for step in parsed_steps
+                ],
+                "expected_result": extract_markdown_section(test_case.task, "预期结果")
+                or "按任务要求完成",
+                "failure_conditions": [],
+                "source_excerpt": test_case.task,
+                "extensions": {"legacy_local": True},
+            }
+        )
+    plan_id = uuid4()
+    task_id = uuid4()
+    plan = ExecutionPlan.model_validate(
+        {
+            "schema_version": "autoglm.execution.v1",
+            "plan_id": str(plan_id),
+            "task_id": str(task_id),
+            "project_id": str(project_id),
+            "task_type": "TEST_RUN",
+            "revision": 1,
+            "normalizer": {
+                "name": "python-legacy-local",
+                "version": "1",
+                "case_schema_version": "autoglm.case.v1",
+                "source_manifest_sha256": "sha256:"
+                + hashlib.sha256(
+                    "\n".join(case.task for case in test_cases).encode("utf-8")
+                ).hexdigest(),
+            },
+            "target_requirements": {
+                "device_type": args.device_type,
+                "app_package": None,
+                "reset_policy": {"type": "NONE"},
+            },
+            "execution_options": {
+                "max_steps_per_agent_call": args.max_steps,
+                "status_judge_enabled": bool(status_judge),
+                "language": args.lang,
+                "task_timeout_seconds": 28800,
+                "model_call_timeout_seconds": 180,
+                "cancel_grace_seconds": 30,
+                "local_report_compatibility": True,
+            },
+            "model_profiles": {
+                "vision_profile": model_config.model_name,
+                "judge_profile": status_judge.config.model_name if status_judge else None,
+            },
+            "test_run": {
+                "case_order": "SEQUENTIAL",
+                "case_retry": {
+                    "max_retries": args.case_retries,
+                    "eligible_outcomes": ["FAIL", "BLOCKED", "RETRYABLE_ERROR"],
+                },
+                "cases": cases,
+            },
+            "adhoc": None,
+        }
+    )
+    return plan, case_lookup
+
+
+def _legacy_case_outcome(status: str) -> CaseOutcome:
+    try:
+        return CaseOutcome(status)
+    except ValueError:
+        return CaseOutcome.CASE_ERROR
 
 
 def check_system_requirements(
@@ -1094,7 +1243,7 @@ def check_model_api(base_url: str, model_name: str, api_key: str = "EMPTY") -> b
             "Name or service not known" in error_msg
             or "nodename nor servname" in error_msg
         ):
-            print(f"   Error: Cannot resolve hostname")
+            print("   Error: Cannot resolve hostname")
             print("   Solution:")
             print("     1. Check the URL is correct")
             print("     2. Verify DNS settings")
@@ -1590,8 +1739,8 @@ Examples:
             parser.error("--limit can only be used together with --file")
         if args.limit <= 0:
             parser.error("--limit must be a positive integer")
-    if args.case_retries < 0:
-        parser.error("--case-retries must be zero or a positive integer")
+    if args.case_retries not in {0, 1}:
+        parser.error("--case-retries must be 0 or 1")
     if args.install_env and args.install_variant and args.install_env != args.install_variant:
         parser.error("--install-env and --install-variant cannot have different values")
     return args
@@ -1649,14 +1798,14 @@ def handle_ios_device_commands(args) -> bool:
 
             status = conn.get_wda_status()
             if status:
-                print(f"\nStatus details:")
+                print("\nStatus details:")
                 value = status.get("value", {})
                 print(f"  Session ID: {status.get('sessionId', 'N/A')}")
                 print(f"  Build: {value.get('build', {}).get('time', 'N/A')}")
 
                 current_app = value.get("currentApp", {})
                 if current_app:
-                    print(f"\nCurrent App:")
+                    print("\nCurrent App:")
                     print(f"  Bundle ID: {current_app.get('bundleId', 'N/A')}")
                     print(f"  Process ID: {current_app.get('pid', 'N/A')}")
         else:
@@ -1665,7 +1814,7 @@ def handle_ios_device_commands(args) -> bool:
             print("  1. Open WebDriverAgent.xcodeproj in Xcode")
             print("  2. Select your device")
             print("  3. Run WebDriverAgentRunner (Product > Test or Cmd+U)")
-            print(f"  4. For USB: Run port forwarding: iproxy 8100 8100")
+            print("  4. For USB: Run port forwarding: iproxy 8100 8100")
 
         return True
 
@@ -1743,9 +1892,9 @@ def handle_device_commands(args) -> bool:
             # Try to get device IP
             ip = conn.get_device_ip(args.device_id)
             if ip:
-                print(f"\nYou can now connect remotely using:")
+                print("\nYou can now connect remotely using:")
                 print(f"  python main.py --connect {ip}:{port}")
-                print(f"\nOr via ADB directly:")
+                print("\nOr via ADB directly:")
                 print(f"  adb connect {ip}:{port}")
             else:
                 print("\nCould not determine device IP. Check device WiFi settings.")
@@ -1985,44 +2134,39 @@ def main():
     if test_cases:
         total_tasks = len(test_cases)
         try:
-            for index, test_case in enumerate(test_cases, start=1):
-                final_status = "UNKNOWN"
-                final_result = ""
-                max_attempts = 1 + args.case_retries
-                for attempt in range(max_attempts):
-                    if attempt:
-                        print(
-                            f"\nRetrying case {test_case.case_id or index}: "
-                            f"attempt {attempt + 1}/{max_attempts}"
-                        )
-                    final_status, final_result = execute_test_case(
+            local_plan, case_lookup = build_legacy_local_plan(
+                test_cases,
+                args=args,
+                model_config=model_config,
+                status_judge=status_judge,
+            )
+
+            def run_attempt(execution_case, attempt_no):
+                test_case = case_lookup[str(execution_case.execution_case_id)]
+                try:
+                    status, message = execute_test_case(
                         agent=agent,
                         reporter=reporter,
                         test_case=test_case,
-                        index=index,
+                        index=execution_case.ordinal,
                         total_tasks=total_tasks,
                         args=args,
                         device_type=device_type,
                         status_judge=status_judge,
-                        attempt=attempt,
+                        attempt=attempt_no - 1,
+                        execution_case_id=str(execution_case.execution_case_id),
+                        ordinal=execution_case.ordinal,
                     )
-                    if final_status == "PASS":
-                        if attempt:
-                            print(
-                                f"Retry passed for {test_case.case_id or index} "
-                                f"on attempt {attempt + 1}/{max_attempts}."
-                            )
-                        break
-                    if attempt < max_attempts - 1:
-                        print(
-                            f"Case {test_case.case_id or index} ended as "
-                            f"{final_status}; retry will run."
-                        )
-                    else:
-                        print(
-                            f"Case {test_case.case_id or index} final status after "
-                            f"{max_attempts} attempt(s): {final_status}"
-                        )
+                    return AttemptResult(_legacy_case_outcome(status), message)
+                except ExecutionError as error:
+                    return AttemptResult(
+                        CaseOutcome.RETRYABLE_ERROR if error.retryable else CaseOutcome.CASE_ERROR,
+                        str(error),
+                        error,
+                    )
+
+            execution_result = TaskExecutor(attempt_runner=run_attempt).execute(local_plan)
+            print(f"\nStructured Task Outcome: {execution_result.outcome.value}")
         except (Exception, KeyboardInterrupt) as exc:
             if reporter.current_case:
                 reporter.finish_case(

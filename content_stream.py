@@ -263,7 +263,7 @@ def main():
     print("=" * 60)
 
     # Get API key from environment
-    api_key = os.getenv("GLM_API_KEY", "6e8c17ba502941e68724c6e8cbc0ba1d.OgUTQLcvN52jyN1M")
+    api_key = os.getenv("GLM_API_KEY", "")
     if not api_key:
         print("\n❌ 错误: 请设置环境变量 GLM_API_KEY")
         print("   export GLM_API_KEY='your-api-key'")

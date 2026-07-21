@@ -32,6 +32,12 @@ setup(
     install_requires=[
         "Pillow>=12.0.0",
         "openai>=2.9.0",
+        "requests>=2.31.0",
+        "PyYAML>=6.0.0",
+        "pydantic>=2.7,<3",
+        "cryptography>=43.0.0",
+        "redis>=5.0.0",
+        "filelock>=3.16.0",
     ],
     extras_require={
         "dev": [
@@ -44,6 +50,7 @@ setup(
     entry_points={
         "console_scripts": [
             "phone-agent=main:main",
+            "open-autoglm-worker=phone_agent.worker.cli:main",
         ],
     },
 )

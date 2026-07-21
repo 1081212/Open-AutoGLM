@@ -1,0 +1,12 @@
+# Plan 中只填写这里的 profile 名称。密钥仅从本机环境变量读取。
+profiles:
+  autoglm-default:
+    base_url: http://model-service.internal/v1
+    model_name: autoglm-phone-9b
+    api_key_env: AUTOGLM_MODEL_API_KEY
+    max_tokens: 3000
+  judge-default:
+    base_url: http://judge-service.internal/v1
+    model_name: test-status-judge
+    api_key_env: AUTOGLM_JUDGE_API_KEY
+    max_tokens: 1000

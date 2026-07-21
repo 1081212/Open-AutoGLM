@@ -6,12 +6,16 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from uuid import uuid4
 
 from phone_agent.actions import ActionHandler
 from phone_agent.actions.handler import do, finish, parse_action
 from phone_agent.config import get_messages, get_system_prompt
 from phone_agent.device_factory import DeviceType
 from phone_agent.device_factory import get_device_factory
+from phone_agent.execution.cancellation import CancellationToken
+from phone_agent.execution.errors import ExecutionError, ExecutionErrorCode
+from phone_agent.execution.lifecycle import LifecycleSink, NullLifecycleSink
 from phone_agent.model import ModelClient, ModelConfig
 from phone_agent.model.client import MessageBuilder
 from phone_agent.status_utils import (
@@ -50,6 +54,10 @@ class AgentConfig:
     reporter: Any | None = None
     auto_manage_report_case: bool = True
     require_structured_finish_status: bool = True
+    cancellation_token: CancellationToken = field(default_factory=CancellationToken)
+    lifecycle_sink: LifecycleSink = field(default_factory=NullLifecycleSink)
+    model_call_timeout: float = 180.0
+    run_context: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.system_prompt is None:
@@ -84,12 +92,13 @@ class RuleContext:
         device:    UIAutomator2 device object (u2.Device) for element-based operations.
                    None when not in ADB/UIAutomator2 mode.
     """
+
     app_name: str
-    activity: str         # e.g. "com.meituan.android.pt.main.MainActivity"
-    screenshot: Any       # phone_agent.adb.screenshot.Screenshot
+    activity: str  # e.g. "com.meituan.android.pt.main.MainActivity"
+    screenshot: Any  # phone_agent.adb.screenshot.Screenshot
     step: int
     task: str
-    device: Any | None = None   # uiautomator2.Device, for element-based ops
+    device: Any | None = None  # uiautomator2.Device, for element-based ops
 
 
 @dataclass
@@ -103,11 +112,13 @@ class CustomRule:
     name: str
     condition: Callable[["RuleContext"], bool]
     action: (
-            dict[str, Any]
-            | list[dict[str, Any]]
-            | Callable[["RuleContext"], dict[str, Any] | list[dict[str, Any]] | None]
+        dict[str, Any]
+        | list[dict[str, Any]]
+        | Callable[["RuleContext"], dict[str, Any] | list[dict[str, Any]] | None]
     )
-    activity: list[str] = field(default_factory=list)  # 先按 Activity 粗筛；空列表表示全局规则
+    activity: list[str] = field(
+        default_factory=list
+    )  # 先按 Activity 粗筛；空列表表示全局规则
     terminal: bool = False  # True → 规则执行完后任务结束
     step_delay: float = 1.0  # 多个动作之间的间隔秒数
     max_fires: int = 1  # 同一个 run() 内最多触发几次（0 = 不限）
@@ -147,16 +158,20 @@ class PhoneAgent:
     ):
         self.model_config = model_config or ModelConfig()
         self.agent_config = agent_config or AgentConfig()
+        self.model_config.timeout_seconds = self.agent_config.model_call_timeout
 
         self.model_client = ModelClient(self.model_config)
         self.action_handler = ActionHandler(
             device_id=self.agent_config.device_id,
             confirmation_callback=confirmation_callback,
             takeover_callback=takeover_callback,
+            cancellation_token=self.agent_config.cancellation_token,
         )
 
         self._context: list[dict[str, Any]] = []
         self._step_count = 0
+        self._model_step_sequence = 0
+        self._run_vision_tokens = 0
         self._current_task = ""
         self.custom_rules = custom_rules or []
         self._rule_fire_counts: dict[str, int] = {}
@@ -177,8 +192,11 @@ class PhoneAgent:
         Returns:
             Final message from the agent.
         """
+        self.agent_config.cancellation_token.raise_if_cancelled()
         self._context = []
         self._step_count = 0
+        self._model_step_sequence = 0
+        self._run_vision_tokens = 0
         self._current_task = task
         self._rule_fire_counts = {}
         self._remind_task = False
@@ -202,6 +220,7 @@ class PhoneAgent:
 
         # Continue until finished or max steps reached
         while self._step_count < self.agent_config.max_steps:
+            self.agent_config.cancellation_token.raise_if_cancelled()
             result = self._execute_step(is_first=False)
 
             if result.finished:
@@ -249,6 +268,8 @@ class PhoneAgent:
         """Reset the agent state for a new task."""
         self._context = []
         self._step_count = 0
+        self._model_step_sequence = 0
+        self._run_vision_tokens = 0
         self._current_task = ""
         self._rule_fire_counts = {}
         self._remind_task = False
@@ -258,11 +279,27 @@ class PhoneAgent:
         self, user_prompt: str | None = None, is_first: bool = False
     ) -> StepResult:
         """Execute a single step of the agent loop."""
+        step_started = time.monotonic()
         self._step_count += 1
+        self.agent_config.cancellation_token.raise_if_cancelled()
+        self.agent_config.lifecycle_sink.emit(
+            "AGENT_STEP_STARTED",
+            {**self.agent_config.run_context, "agent_step": self._step_count},
+        )
 
         # Capture current screen state
         device_factory = get_device_factory()
         screenshot = device_factory.get_screenshot(self.agent_config.device_id)
+        self.agent_config.lifecycle_sink.emit(
+            "SCREEN_CAPTURED",
+            {
+                **self.agent_config.run_context,
+                "agent_step": self._step_count,
+                "width": screenshot.width,
+                "height": screenshot.height,
+                "sensitive": screenshot.is_sensitive,
+            },
+        )
         try:
             current_app = device_factory.get_current_app(self.agent_config.device_id)
         except Exception as exc:
@@ -278,7 +315,7 @@ class PhoneAgent:
                 current_app=current_app,
                 sensitive_screenshot=screenshot.is_sensitive,
             )
-
+            self.agent_config.cancellation_token.raise_if_cancelled()
         # 首步也先放入 system prompt，避免规则在第一步命中后，
         # 下一轮模型上下文里缺少系统提示。
         if is_first and not self._context:
@@ -323,17 +360,43 @@ class PhoneAgent:
             # print("\n" + "=" * 50)
             # print(f"💭 {msgs['thinking']}:")
             # print("-" * 50)
-            response = self.model_client.request(self._context)
+            self.agent_config.cancellation_token.raise_if_cancelled()
+            self.agent_config.lifecycle_sink.emit(
+                "MODEL_REQUEST_STARTED",
+                {**self.agent_config.run_context, "agent_step": self._step_count},
+            )
+            response = self.model_client.request(
+                self._context,
+                cancellation_check=self.agent_config.cancellation_token.raise_if_cancelled,
+            )
+            self._run_vision_tokens += max(0, response.total_tokens)
+            self.agent_config.cancellation_token.raise_if_cancelled()
+            self.agent_config.lifecycle_sink.emit(
+                "MODEL_REQUEST_FINISHED",
+                {
+                    **self.agent_config.run_context,
+                    "agent_step": self._step_count,
+                    "prompt_tokens": response.prompt_tokens,
+                    "completion_tokens": response.completion_tokens,
+                    "total_tokens": response.total_tokens,
+                },
+            )
+        except ExecutionError:
+            self.model_client.close_active_stream()
+            raise
         except Exception as e:
             if self.agent_config.verbose:
                 traceback.print_exc()
-            return StepResult(
-                success=False,
-                finished=True,
-                action=None,
-                thinking="",
-                message=f"Model error: {e}",
-            )
+            timeout = "timeout" in type(e).__name__.lower()
+            raise ExecutionError(
+                code=(
+                    ExecutionErrorCode.MODEL_TIMEOUT
+                    if timeout
+                    else ExecutionErrorCode.MODEL_ERROR
+                ),
+                message=f"Model request failed: {type(e).__name__}",
+                retryable=True,
+            ) from e
 
         # Parse action from response
         try:
@@ -346,8 +409,7 @@ class PhoneAgent:
         action_response = response.action
         if (
             self.agent_config.require_structured_finish_status
-            and
-            action.get("_metadata") == "finish"
+            and action.get("_metadata") == "finish"
             and not finish_message_has_status(action)
             and self._finish_status_repair_count < 2
         ):
@@ -379,9 +441,30 @@ class PhoneAgent:
 
         # Execute action
         try:
+            self.agent_config.cancellation_token.raise_if_cancelled()
+            self.agent_config.lifecycle_sink.emit(
+                "ACTION_STARTED",
+                {
+                    **self.agent_config.run_context,
+                    "agent_step": self._step_count,
+                    "action_name": action.get("action") or action.get("_metadata"),
+                },
+            )
             result = self.action_handler.execute(
                 action, screenshot.width, screenshot.height
             )
+            self.agent_config.cancellation_token.raise_if_cancelled()
+            self.agent_config.lifecycle_sink.emit(
+                "ACTION_FINISHED",
+                {
+                    **self.agent_config.run_context,
+                    "agent_step": self._step_count,
+                    "success": result.success,
+                    "should_finish": result.should_finish,
+                },
+            )
+        except ExecutionError:
+            raise
         except Exception as e:
             if self.agent_config.verbose:
                 traceback.print_exc()
@@ -398,6 +481,56 @@ class PhoneAgent:
                 vision_completion_tokens=response.completion_tokens,
                 vision_cached_tokens=response.cached_tokens,
                 vision_total_tokens=response.total_tokens,
+                model_ttft_ms=(
+                    round(response.time_to_first_token * 1000)
+                    if response.time_to_first_token is not None
+                    else None
+                ),
+                model_total_ms=(
+                    round(response.total_time * 1000)
+                    if response.total_time is not None
+                    else None
+                ),
+            )
+            self.agent_config.cancellation_token.raise_if_cancelled()
+        self.agent_config.lifecycle_sink.emit(
+            "ACTION_RECORDED",
+            {
+                **self.agent_config.run_context,
+                "action_id": str(uuid4()),
+                "agent_step": self._step_count,
+                "action": action,
+                "success": result.success,
+                "message": result.message,
+                "vision_prompt_tokens": response.prompt_tokens,
+                "vision_completion_tokens": response.completion_tokens,
+                "vision_cached_tokens": response.cached_tokens,
+                "vision_total_tokens": response.total_tokens,
+                "model_ttft_ms": (
+                    round(response.time_to_first_token * 1000)
+                    if response.time_to_first_token is not None
+                    else None
+                ),
+                "model_total_ms": (
+                    round(response.total_time * 1000)
+                    if response.total_time is not None
+                    else None
+                ),
+            },
+        )
+        if "execution_item_id" in self.agent_config.run_context:
+            self._model_step_sequence += 1
+            self.agent_config.lifecycle_sink.emit(
+                "STEP_FINISHED",
+                {
+                    **self.agent_config.run_context,
+                    "step_sequence": self._model_step_sequence,
+                    "duration_ms": max(
+                        0, round((time.monotonic() - step_started) * 1000)
+                    ),
+                    "vision_tokens": max(0, response.total_tokens),
+                    "judge_tokens": 0,
+                },
             )
 
         # Add assistant response to context
@@ -457,9 +590,10 @@ class PhoneAgent:
                     # callable 规则可直接通过 ctx.device 完成操作。返回 None 表示
                     # 规则自己已经处理完，本框架不再派发 action。
                     if self.agent_config.verbose:
-                        print(f'\n[Rule:{rule.name}] fired - callable handled it')
+                        print(f"\n[Rule:{rule.name}] fired - callable handled it")
                     if rule.post_delay > 0:
-                        time.sleep(rule.post_delay)
+                        if self.agent_config.cancellation_token.wait(rule.post_delay):
+                            self.agent_config.cancellation_token.raise_if_cancelled()
                     self._append_rule_context_note(rule, 0)
                     return StepResult(
                         success=True,
@@ -469,13 +603,16 @@ class PhoneAgent:
                         message=None,
                     )
 
-                actions = raw_actions if isinstance(raw_actions, list) else [raw_actions]
+                actions = (
+                    raw_actions if isinstance(raw_actions, list) else [raw_actions]
+                )
                 if self.agent_config.verbose:
-                    print(f'\n[Rule:{rule.name}] fired - {len(actions)} action(s)')
+                    print(f"\n[Rule:{rule.name}] fired - {len(actions)} action(s)")
 
                 last_action: dict[str, Any] | None = None
                 last_result = None
                 for index, action in enumerate(actions, start=1):
+                    self.agent_config.cancellation_token.raise_if_cancelled()
                     last_action = action
                     if self.agent_config.verbose:
                         print(f"  [{index}/{len(actions)}] {action}")
@@ -492,10 +629,12 @@ class PhoneAgent:
                     if last_result.should_finish or action.get("_metadata") == "finish":
                         break
                     if index < len(actions) and rule.step_delay > 0:
-                        time.sleep(rule.step_delay)
+                        if self.agent_config.cancellation_token.wait(rule.step_delay):
+                            self.agent_config.cancellation_token.raise_if_cancelled()
 
                 if rule.post_delay > 0:
-                    time.sleep(rule.post_delay)
+                    if self.agent_config.cancellation_token.wait(rule.post_delay):
+                        self.agent_config.cancellation_token.raise_if_cancelled()
 
                 self._append_rule_context_note(rule, len(actions))
                 finished = (
@@ -511,6 +650,8 @@ class PhoneAgent:
                     message=(last_result.message if last_result else None)
                     or (last_action or {}).get("message"),
                 )
+            except ExecutionError:
+                raise
             except Exception as exc:
                 # 规则失败不能拖垮基础 agent 流程；记录后继续尝试下一条规则。
                 if self.agent_config.verbose:
@@ -670,7 +811,9 @@ class PhoneAgent:
                 if self.agent_config.verbose:
                     traceback.print_exc()
                 continue
-            if action.get("_metadata") == "finish" and finish_message_has_status(action):
+            if action.get("_metadata") == "finish" and finish_message_has_status(
+                action
+            ):
                 return str(action.get("message") or fallback_message)
         return fallback_message
 
@@ -683,3 +826,8 @@ class PhoneAgent:
     def step_count(self) -> int:
         """Get the current step count."""
         return self._step_count
+
+    @property
+    def run_vision_tokens(self) -> int:
+        """Total vision tokens consumed by the current run() call."""
+        return self._run_vision_tokens

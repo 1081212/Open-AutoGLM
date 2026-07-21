@@ -65,6 +65,8 @@ app_package_name.py
 .env
 cloud-phone-test
 test_artifacts
+worker_spool/
+worker-model-profiles.yaml
 ADBKeyboard.apk
 gitlab_artifacts
 scripts/code.sh

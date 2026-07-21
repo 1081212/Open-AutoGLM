@@ -3,12 +3,9 @@
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from openai import OpenAI
-
-from phone_agent.config.i18n import get_message
-
 
 @dataclass
 class ModelConfig:
@@ -23,6 +20,7 @@ class ModelConfig:
     frequency_penalty: float = 0.2
     extra_body: dict[str, Any] = field(default_factory=dict)
     lang: str = "cn"  # Language for UI messages: 'cn' or 'en'
+    timeout_seconds: float = 180.0
 
 
 @dataclass
@@ -52,9 +50,18 @@ class ModelClient:
 
     def __init__(self, config: ModelConfig | None = None):
         self.config = config or ModelConfig()
-        self.client = OpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
+        self.client = OpenAI(
+            base_url=self.config.base_url,
+            api_key=self.config.api_key,
+            timeout=self.config.timeout_seconds,
+        )
+        self._active_stream: Any | None = None
 
-    def request(self, messages: list[dict[str, Any]]) -> ModelResponse:
+    def request(
+        self,
+        messages: list[dict[str, Any]],
+        cancellation_check: Callable[[], None] | None = None,
+    ) -> ModelResponse:
         """
         Send a request to the model.
 
@@ -83,6 +90,7 @@ class ModelClient:
             stream_options={"include_usage": True},
             stream=True,
         )
+        self._active_stream = stream
 
         raw_content = ""
         usage = None
@@ -91,66 +99,57 @@ class ModelClient:
         in_action_phase = False  # Track if we've entered the action phase
         first_token_received = False
 
-        for chunk in stream:
-            chunk_usage = getattr(chunk, "usage", None)
-            if chunk_usage is not None:
-                usage = chunk_usage
-            if len(chunk.choices) == 0:
-                continue
-            if chunk.choices[0].delta.content is not None:
-                content = chunk.choices[0].delta.content
-                raw_content += content
-
-                # Record time to first token
-                if not first_token_received:
-                    time_to_first_token = time.time() - start_time
-                    first_token_received = True
-
-                if in_action_phase:
-                    # Already in action phase, just accumulate content without printing
+        try:
+            for chunk in stream:
+                if cancellation_check:
+                    cancellation_check()
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    usage = chunk_usage
+                if len(chunk.choices) == 0:
                     continue
+                if chunk.choices[0].delta.content is not None:
+                    content = chunk.choices[0].delta.content
+                    raw_content += content
 
-                buffer += content
+                    # Record time to first token
+                    if not first_token_received:
+                        time_to_first_token = time.time() - start_time
+                        first_token_received = True
 
-                # Check if any marker is fully present in buffer
-                marker_found = False
-                for marker in action_markers:
-                    if marker in buffer:
-                        # Marker found, print everything before it
-                        thinking_part = buffer.split(marker, 1)[0]
-                        # Thinking text is kept in ModelResponse.raw_content and
-                        # conversation context. Do not print it into test logs.
-                        # print(thinking_part, end="", flush=True)
-                        # print()  # Print newline after thinking is complete
-                        in_action_phase = True
-                        marker_found = True
+                    if in_action_phase:
+                        continue
 
-                        # Record time to thinking end
-                        if time_to_thinking_end is None:
-                            time_to_thinking_end = time.time() - start_time
+                    buffer += content
 
-                        break
+                    marker_found = False
+                    for marker in action_markers:
+                        if marker in buffer:
+                            # Thinking remains in the response/context, not stdout.
+                            in_action_phase = True
+                            marker_found = True
 
-                if marker_found:
-                    continue  # Continue to collect remaining content
+                            if time_to_thinking_end is None:
+                                time_to_thinking_end = time.time() - start_time
 
-                # Check if buffer ends with a prefix of any marker
-                # If so, don't print yet (wait for more content)
-                is_potential_marker = False
-                for marker in action_markers:
-                    for i in range(1, len(marker)):
-                        if buffer.endswith(marker[:i]):
-                            is_potential_marker = True
                             break
-                    if is_potential_marker:
-                        break
 
-                if not is_potential_marker:
-                    # Safe to print the buffer
-                    # Suppress streaming thinking in stdout; reports use
-                    # structured artifacts instead of raw model thoughts.
-                    # print(buffer, end="", flush=True)
-                    buffer = ""
+                    if marker_found:
+                        continue
+
+                    is_potential_marker = False
+                    for marker in action_markers:
+                        for i in range(1, len(marker)):
+                            if buffer.endswith(marker[:i]):
+                                is_potential_marker = True
+                                break
+                        if is_potential_marker:
+                            break
+
+                    if not is_potential_marker:
+                        buffer = ""
+        finally:
+            self._active_stream = None
 
         # Calculate total time
         total_time = time.time() - start_time
@@ -159,7 +158,6 @@ class ModelClient:
         thinking, action = self._parse_response(raw_content)
 
         # Print performance metrics
-        lang = self.config.lang
         # Performance metrics are still returned on ModelResponse. Keeping them
         # out of stdout prevents them from polluting functional test reports.
         # print()
@@ -191,6 +189,11 @@ class ModelClient:
             cached_tokens=_cached_tokens(usage),
             total_tokens=_usage_value(usage, "total_tokens"),
         )
+
+    def close_active_stream(self) -> None:
+        stream = self._active_stream
+        if stream is not None and hasattr(stream, "close"):
+            stream.close()
 
     def _parse_response(self, content: str) -> tuple[str, str]:
         """

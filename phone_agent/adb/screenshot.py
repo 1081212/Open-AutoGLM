@@ -11,6 +11,9 @@ from typing import Tuple
 
 from PIL import Image
 
+from phone_agent.adb.command import AdbCommandAdapter
+from phone_agent.execution.errors import ExecutionError, ExecutionErrorCode
+
 
 @dataclass
 class Screenshot:
@@ -37,6 +40,9 @@ def get_screenshot(device_id: str | None = None, timeout: int = 10) -> Screensho
         If the screenshot fails (e.g., on sensitive screens like payment pages),
         a black fallback image is returned with is_sensitive=True.
     """
+    if os.getenv("AUTOGLM_WORKER_CHILD") == "1":
+        return _get_strict_worker_screenshot(device_id, timeout)
+
     temp_path = os.path.join(tempfile.gettempdir(), f"screenshot_{uuid.uuid4()}.png")
     adb_prefix = _get_adb_prefix(device_id)
 
@@ -106,4 +112,40 @@ def _create_fallback_screenshot(is_sensitive: bool) -> Screenshot:
         width=default_width,
         height=default_height,
         is_sensitive=is_sensitive,
+    )
+
+
+def _get_strict_worker_screenshot(device_id: str | None, timeout: int) -> Screenshot:
+    if not device_id:
+        raise ExecutionError(
+            ExecutionErrorCode.DEVICE_NOT_FOUND,
+            "Worker screenshot requires an explicitly selected ADB serial",
+        )
+    result = AdbCommandAdapter().run_bytes(
+        device_id,
+        ["exec-out", "screencap", "-p"],
+        timeout=timeout,
+    )
+    if not result.stdout:
+        raise ExecutionError(
+            ExecutionErrorCode.DEVICE_DISCONNECTED,
+            "ADB screenshot returned no data",
+            retryable=True,
+        )
+    try:
+        image = Image.open(BytesIO(result.stdout))
+        image.load()
+        width, height = image.size
+        buffered = BytesIO()
+        image.save(buffered, format="PNG")
+    except Exception as exc:
+        raise ExecutionError(
+            ExecutionErrorCode.ACTION_ERROR,
+            "ADB screenshot data is not a valid image",
+        ) from exc
+    return Screenshot(
+        base64_data=base64.b64encode(buffered.getvalue()).decode("ascii"),
+        width=width,
+        height=height,
+        is_sensitive=False,
     )
