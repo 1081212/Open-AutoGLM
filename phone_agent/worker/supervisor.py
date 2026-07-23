@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable
 from uuid import UUID
 
 from phone_agent.execution.cancellation import CancellationToken
 from phone_agent.execution.errors import ExecutionError, ExecutionErrorCode
-from phone_agent.execution.models import ExecutionPlan, TaskType
-from phone_agent.execution.result import TaskExecutionResult
+from phone_agent.execution.models import (
+    SUPPORTED_EXECUTION_VERSIONS,
+    ExecutionPlan,
+    TaskType,
+)
+from phone_agent.execution.result import TaskExecutionResult, TaskOutcome
 from phone_agent.worker.adhoc_events import (
     aggregate_adhoc_events,
     validate_adhoc_completion,
@@ -22,8 +28,12 @@ from phone_agent.worker.heartbeat import RunLeaseLoop, WorkerRuntimeState
 from phone_agent.worker.models import ClaimResponse, RedisMessage, WorkerActivity
 from phone_agent.worker.outbox import DurableOutbox, LocalSealer
 from phone_agent.worker.platform_events import OutboxPump
+from phone_agent.worker.pre_test_install import FrozenGitLabApkInstaller
 from phone_agent.worker.redis_notifier import RedisDispatchNotifier
 from phone_agent.worker.spool import PlanDescriptor, PlanSpool, SpoolPlan
+from phone_agent.worker.time_utils import parse_aware_iso8601
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +47,7 @@ class ClaimedRun:
     adb_serial: str
     lease_token: str
     fencing_token: int
+    run_started_at: str
     lease_expires_at: str
     renew_after_seconds: int
 
@@ -58,6 +69,7 @@ class WorkerSupervisor:
         execute_plan: Callable[
             [SpoolPlan, ClaimedRun, CancellationToken], TaskExecutionResult
         ],
+        pre_test_installer: FrozenGitLabApkInstaller | None = None,
     ) -> None:
         self.worker_id = worker_id
         self.instance_id = instance_id
@@ -70,6 +82,7 @@ class WorkerSupervisor:
         self.state = state
         self.device_lock_dir = device_lock_dir
         self.execute_plan = execute_plan
+        self.pre_test_installer = pre_test_installer
 
     def process_one(self, *, block_ms: int = 1000) -> bool:
         activity, current_run, _ = self.state.snapshot()
@@ -83,6 +96,15 @@ class WorkerSupervisor:
 
     def _process_message(self, message: RedisMessage) -> None:
         notification = message.notification
+        logger.info(
+            "Dispatch received dispatch_id=%s task_id=%s task_type=%s "
+            "plan_id=%s device_uid=%s",
+            notification.dispatch_id,
+            notification.task_id,
+            notification.task_type,
+            notification.plan_id,
+            notification.device_uid,
+        )
         if notification.worker_id != self.worker_id:
             raise ExecutionError(
                 ExecutionErrorCode.CLAIM_REJECTED, "dispatch worker binding mismatch"
@@ -107,21 +129,41 @@ class WorkerSupervisor:
         cancellation = CancellationToken()
         try:
             self.state.set_activity(WorkerActivity.CLAIMING)
+            logger.info(
+                "Claiming dispatch dispatch_id=%s device_uid=%s",
+                notification.dispatch_id,
+                notification.device_uid,
+            )
             claim = self.api.claim(
                 str(notification.dispatch_id),
                 {
                     "worker_id": str(self.worker_id),
                     "instance_id": str(self.instance_id),
                     "device_uid": str(notification.device_uid),
-                    "supported_execution_versions": ["autoglm.execution.v1"],
+                    "supported_execution_versions": list(SUPPORTED_EXECUTION_VERSIONS),
                     "supported_event_versions": ["autoglm.event.v1"],
                 },
             )
             if not claim.claimed:
+                logger.warning(
+                    "Claim rejected dispatch_id=%s reason=%s ack_disposition=%s",
+                    notification.dispatch_id,
+                    claim.reason,
+                    claim.ack_disposition,
+                )
                 if claim.ack_disposition == "ACK":
                     self.notifier.acknowledge(message)
                 return
             claimed = self._validate_claim(notification, claim, adb_serial)
+            logger.info(
+                "Claim accepted task_run_id=%s fencing_token=%s "
+                "run_started_at=%s adb_serial=%s",
+                claimed.task_run_id,
+                claimed.fencing_token,
+                claimed.run_started_at,
+                claimed.adb_serial,
+            )
+            device_lock.bind_task_run(claimed.task_run_id)
             self.state.set_activity(
                 WorkerActivity.DOWNLOADING_PLAN, task_run_id=str(claimed.task_run_id)
             )
@@ -136,6 +178,7 @@ class WorkerSupervisor:
                 "device_uid": str(claimed.device_uid),
                 "adb_serial": claimed.adb_serial,
                 "fencing_token": claimed.fencing_token,
+                "run_started_at": claimed.run_started_at,
                 "lease_expires_at": claimed.lease_expires_at,
                 "lease_credential_ref": lease_ref,
             }
@@ -168,9 +211,26 @@ class WorkerSupervisor:
             )
             lease_loop.start()
             descriptor = _descriptor(claim)
+            logger.info(
+                "Downloading Plan task_run_id=%s schema_version=%s "
+                "compressed_size=%d canonical_size=%d",
+                claimed.task_run_id,
+                claim.plan.schema_version,
+                descriptor.compressed_size,
+                descriptor.canonical_size,
+            )
             with self.api.plan_chunks(claim.plan.download_url) as chunks:
                 stored = self.spool.store(str(claimed.task_run_id), chunks, descriptor)
             self._validate_plan_binding(stored, notification, claimed)
+            logger.info(
+                "Plan verified task_run_id=%s task_type=%s case_count=%d "
+                "pre_test_install=%s reset_policy=%s",
+                claimed.task_run_id,
+                stored.plan.task_type.value,
+                len(stored.plan.test_run.cases) if stored.plan.test_run else 0,
+                stored.plan.pre_test_install is not None,
+                stored.plan.target_requirements.reset_policy.type,
+            )
             self.outbox.save_task_run_state(
                 str(claimed.task_run_id),
                 state="ACTIVE",
@@ -198,11 +258,109 @@ class WorkerSupervisor:
                 plan_ready=True,
                 plan_accepted=True,
             )
+            logger.info("Plan accepted task_run_id=%s", claimed.task_run_id)
             self.notifier.acknowledge(message)
             self.state.set_activity(
                 WorkerActivity.BUSY, task_run_id=str(claimed.task_run_id)
             )
-            result = self.execute_plan(stored, claimed, cancellation)
+            result: TaskExecutionResult | None = None
+            if stored.plan.pre_test_install is not None:
+                logger.info(
+                    "Pre-test APK installation starting task_run_id=%s",
+                    claimed.task_run_id,
+                )
+                if self.pre_test_installer is None:
+                    install_error = ExecutionError(
+                        ExecutionErrorCode.PRE_TEST_INSTALL_FAILED,
+                        "execution v2 is enabled but the GitLab installer is unavailable",
+                    )
+                    result = self._pre_install_failure_result(
+                        stored.plan, install_error
+                    )
+                else:
+
+                    def install_guard() -> None:
+                        if lease_loop and lease_loop.lost_error is not None:
+                            raise lease_loop.lost_error
+                        cancellation.raise_if_cancelled()
+                        try:
+                            device_lock.assert_held(
+                                worker_id=self.worker_id,
+                                instance_id=self.instance_id,
+                                device_uid=claimed.device_uid,
+                                adb_serial=claimed.adb_serial,
+                                task_run_id=claimed.task_run_id,
+                            )
+                        except RuntimeError as exc:
+                            raise ExecutionError(
+                                ExecutionErrorCode.PRE_TEST_INSTALL_FAILED,
+                                "active device lock was lost before APK installation",
+                            ) from exc
+
+                    try:
+                        install_attempt = self.pre_test_installer.install(
+                            stored,
+                            claimed,
+                            cancellation,
+                            lease_credential_ref=lease_ref,
+                            guard=install_guard,
+                        )
+                    except ExecutionError as install_error:
+                        if install_error.code is ExecutionErrorCode.LEASE_LOST:
+                            raise
+                        install_attempt = None
+                        result = self._pre_install_failure_result(
+                            stored.plan, install_error
+                        )
+                    except Exception:
+                        install_attempt = None
+                        result = self._pre_install_failure_result(
+                            stored.plan,
+                            ExecutionError(
+                                ExecutionErrorCode.PRE_TEST_INSTALL_FAILED,
+                                "unexpected pre-test installation failure",
+                            ),
+                        )
+                    if install_attempt and install_attempt.error:
+                        result = self._pre_install_failure_result(
+                            stored.plan,
+                            install_attempt.error,
+                            started_at=install_attempt.fact.started_at,
+                            finished_at=install_attempt.fact.finished_at,
+                        )
+                        self.pre_test_installer.emit_failed_run_finished(
+                            stored.plan,
+                            claimed,
+                            lease_ref,
+                            install_attempt.fact,
+                        )
+                if result is None:
+                    logger.info(
+                        "Pre-test APK installation completed task_run_id=%s",
+                        claimed.task_run_id,
+                    )
+                else:
+                    logger.error(
+                        "Pre-test APK installation failed task_run_id=%s "
+                        "error_code=%s",
+                        claimed.task_run_id,
+                        result.error.code.value if result.error else "UNKNOWN",
+                    )
+            if result is None:
+                logger.info(
+                    "Task execution starting task_run_id=%s task_type=%s",
+                    claimed.task_run_id,
+                    stored.plan.task_type.value,
+                )
+                result = self.execute_plan(stored, claimed, cancellation)
+                logger.info(
+                    "Task execution finished task_run_id=%s outcome=%s "
+                    "completed_cases=%d not_run_cases=%d",
+                    claimed.task_run_id,
+                    result.outcome.value,
+                    len(result.cases),
+                    len(result.not_run_execution_case_ids),
+                )
             self.state.set_activity(
                 WorkerActivity.FINALIZING, task_run_id=str(claimed.task_run_id)
             )
@@ -219,6 +377,11 @@ class WorkerSupervisor:
                     "Run completion is durably queued; Worker remains blocked until recovery",
                     retryable=True,
                 )
+            logger.info(
+                "Task completion accepted task_run_id=%s outcome=%s",
+                claimed.task_run_id,
+                result.outcome.value,
+            )
             self.outbox.save_task_run_state(
                 str(claimed.task_run_id),
                 state="COMPLETED",
@@ -227,6 +390,14 @@ class WorkerSupervisor:
                 plan_accepted=True,
             )
         except ExecutionError as error:
+            logger.error(
+                "Task processing failed task_run_id=%s error_code=%s "
+                "retryable=%s message=%s",
+                claimed.task_run_id if claimed else "-",
+                error.code.value,
+                error.retryable,
+                error.message,
+            )
             self.state.set_activity(
                 WorkerActivity.DEGRADED,
                 task_run_id=str(claimed.task_run_id) if claimed else None,
@@ -273,6 +444,7 @@ class WorkerSupervisor:
         assert (
             claim.device_uid and claim.lease_token and claim.fencing_token is not None
         )
+        assert claim.run_started_at
         assert claim.lease_expires_at and claim.renew_after_seconds
         return ClaimedRun(
             task_id=claim.task_id,
@@ -284,6 +456,7 @@ class WorkerSupervisor:
             adb_serial=adb_serial,
             lease_token=claim.lease_token,
             fencing_token=claim.fencing_token,
+            run_started_at=claim.run_started_at,
             lease_expires_at=claim.lease_expires_at,
             renew_after_seconds=claim.renew_after_seconds,
         )
@@ -318,9 +491,26 @@ class WorkerSupervisor:
         outcome = result.outcome.value
         started_at = result.started_at.isoformat()
         finished_at = result.finished_at.isoformat()
-        summary: dict[str, object] = self._test_run_summary(
-            result, str(claimed.task_run_id)
-        )
+        summary: dict[str, object]
+        if plan.task_type is TaskType.TEST_RUN:
+            run_started_at = _parse_platform_run_started_at(claimed.run_started_at)
+            finished = _require_aware_time(result.finished_at, "finished_at")
+            if finished < run_started_at:
+                raise ExecutionError(
+                    ExecutionErrorCode.PLAN_INVALID,
+                    "TEST_RUN finished_at is earlier than platform run_started_at",
+                )
+            # Preserve the platform's exact timestamp spelling. Its completion
+            # service compares this value with task_runs.started_at.
+            started_at = claimed.run_started_at
+            finished_at = result.finished_at.isoformat()
+            summary = self._test_run_summary(
+                result,
+                str(claimed.task_run_id),
+                run_started_at=run_started_at,
+            )
+        else:
+            summary = {}
         if plan.task_type is TaskType.ADHOC:
             assert plan.adhoc is not None
             aggregate = aggregate_adhoc_events(
@@ -353,6 +543,21 @@ class WorkerSupervisor:
                     "ADHOC events are not acknowledged; Task complete is blocked",
                     retryable=True,
                 )
+        result_completeness = (
+            "PARTIAL"
+            if self.outbox.unacknowledged_count_for_run(
+                str(claimed.task_run_id), kind="ARTIFACT_UPLOAD"
+            )
+            else "COMPLETE"
+        )
+        logger.info(
+            "Submitting Task completion task_run_id=%s outcome=%s "
+            "result_completeness=%s summary=%s",
+            claimed.task_run_id,
+            outcome,
+            result_completeness,
+            summary,
+        )
         payload = {
             "schema_version": "autoglm.result.v1",
             "idempotency_key": f"{claimed.task_run_id}:final",
@@ -364,13 +569,7 @@ class WorkerSupervisor:
             "device_uid": str(claimed.device_uid),
             "phase": "COMPLETED",
             "outcome": outcome,
-            "result_completeness": (
-                "PARTIAL"
-                if self.outbox.unacknowledged_count_for_run(
-                    str(claimed.task_run_id), kind="ARTIFACT_UPLOAD"
-                )
-                else "COMPLETE"
-            ),
+            "result_completeness": result_completeness,
             "started_at": started_at,
             "finished_at": finished_at,
             "summary": summary,
@@ -395,8 +594,48 @@ class WorkerSupervisor:
             )
             return False
 
+    @staticmethod
+    def _pre_install_failure_result(
+        plan: ExecutionPlan,
+        error: ExecutionError,
+        *,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+    ) -> TaskExecutionResult:
+        if error.code is ExecutionErrorCode.LEASE_LOST:
+            raise error
+        if error.code is ExecutionErrorCode.CANCELLED:
+            outcome = TaskOutcome.CANCELLED
+        else:
+            outcome = TaskOutcome.INFRA_ERROR
+        start = (
+            _parse_event_time(started_at) if started_at else datetime.now(timezone.utc)
+        )
+        finish = (
+            _parse_event_time(finished_at)
+            if finished_at
+            else datetime.now(timezone.utc)
+        )
+        not_run = (
+            tuple(case.execution_case_id for case in plan.test_run.cases)
+            if plan.test_run
+            else ()
+        )
+        return TaskExecutionResult(
+            task_id=plan.task_id,
+            outcome=outcome,
+            started_at=start,
+            finished_at=finish,
+            error=error,
+            not_run_execution_case_ids=not_run,
+        )
+
     def _test_run_summary(
-        self, result: TaskExecutionResult, task_run_id: str
+        self,
+        result: TaskExecutionResult,
+        task_run_id: str,
+        *,
+        run_started_at: datetime,
     ) -> dict[str, int]:
         counts = {
             "passed": 0,
@@ -418,8 +657,25 @@ class WorkerSupervisor:
             counts[key] += 1
         vision_tokens = 0
         judge_tokens = 0
-        for event in self.outbox.events_for_run(task_run_id):
+        events = self.outbox.events_for_run(task_run_id)
+        completed_attempts = {
+            (
+                event.get("execution_case_id"),
+                event.get("case_attempt_id"),
+                event.get("case_attempt_no"),
+            )
+            for event in events
+            if event.get("type") == "CASE_ATTEMPT_FINISHED"
+        }
+        for event in events:
             if event.get("type") != "STEP_FINISHED":
+                continue
+            attempt_binding = (
+                event.get("execution_case_id"),
+                event.get("case_attempt_id"),
+                event.get("case_attempt_no"),
+            )
+            if attempt_binding not in completed_attempts:
                 continue
             data = event.get("data") or {}
             vision_tokens += _event_metric(data, "vision_tokens")
@@ -432,7 +688,14 @@ class WorkerSupervisor:
             "vision_tokens": vision_tokens,
             "judge_tokens": judge_tokens,
             "duration_ms": max(
-                0, int((result.finished_at - result.started_at).total_seconds() * 1000)
+                0,
+                int(
+                    (
+                        _require_aware_time(result.finished_at, "finished_at")
+                        - run_started_at
+                    ).total_seconds()
+                    * 1000
+                ),
             ),
         }
 
@@ -445,6 +708,36 @@ def _event_metric(data: dict, name: str) -> int:
             f"STEP_FINISHED {name} must be a non-negative integer",
         )
     return value
+
+
+def _parse_event_time(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ExecutionError(
+            ExecutionErrorCode.PRE_TEST_INSTALL_FAILED,
+            "installation fact timestamp has no timezone",
+        )
+    return parsed.astimezone(timezone.utc)
+
+
+def _parse_platform_run_started_at(value: str) -> datetime:
+    try:
+        parsed = parse_aware_iso8601(value, "run_started_at")
+    except ValueError as exc:
+        raise ExecutionError(
+            ExecutionErrorCode.PLAN_INVALID,
+            "Claim run_started_at is not an ISO-8601 date-time",
+        ) from exc
+    return parsed.astimezone(timezone.utc)
+
+
+def _require_aware_time(value: datetime, name: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ExecutionError(
+            ExecutionErrorCode.PLAN_INVALID,
+            f"TEST_RUN {name} has no timezone",
+        )
+    return value.astimezone(timezone.utc)
 
 
 def _descriptor(claim: ClaimResponse) -> PlanDescriptor:

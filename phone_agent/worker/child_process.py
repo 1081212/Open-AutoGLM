@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -18,7 +19,7 @@ from uuid import UUID
 
 from phone_agent.execution.cancellation import CancellationToken
 from phone_agent.execution.errors import ExecutionError, ExecutionErrorCode
-from phone_agent.execution.models import CaseOutcome, ExecutionPlan
+from phone_agent.execution.models import CaseOutcome, ExecutionPlan, TaskType
 from phone_agent.execution.result import (
     AttemptResult,
     CaseExecutionResult,
@@ -35,6 +36,9 @@ from phone_agent.worker.api_client import WorkerApiClient
 from phone_agent.worker.case_coordinator import PlatformCaseCoordinator
 from phone_agent.worker.report_bundle import create_local_report_bundle
 from phone_agent.worker.config import RuntimeEnvironment, parse_runtime_environment
+from phone_agent.worker.logging_config import configure_worker_logging
+
+logger = logging.getLogger(__name__)
 
 
 class ChildProcessPlanExecutor:
@@ -108,11 +112,21 @@ class ChildProcessPlanExecutor:
             "fencing_token": claimed.fencing_token,
             "producer_id": str(uuid7()),
             "device_uid": str(claimed.device_uid),
+            "run_started_already": (
+                stored.plan.pre_test_install is not None
+                and stored.plan.task_type is TaskType.TEST_RUN
+            ),
         }
         with (
             (log_root / "stdout.log").open("ab", buffering=0) as stdout_log,
             (log_root / "stderr.log").open("ab", buffering=0) as stderr_log,
         ):
+            logger.info(
+                "Starting task child task_run_id=%s task_type=%s log_dir=%s",
+                claimed.task_run_id,
+                stored.plan.task_type.value,
+                log_root,
+            )
             process = subprocess.Popen(
                 [
                     self.python_executable,
@@ -127,6 +141,7 @@ class ChildProcessPlanExecutor:
                 pass_fds=(event_write,),
                 start_new_session=True,
                 text=True,
+                env=_child_environment(),
             )
             os.close(event_write)
             reader = threading.Thread(
@@ -138,6 +153,11 @@ class ChildProcessPlanExecutor:
             reader.start()
             _atomic_json(
                 run_root / "child.json", {"pid": process.pid, "pgid": process.pid}
+            )
+            logger.info(
+                "Task child started task_run_id=%s pid=%s",
+                claimed.task_run_id,
+                process.pid,
             )
             assert process.stdin is not None
             process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
@@ -154,12 +174,24 @@ class ChildProcessPlanExecutor:
                     _signal_group(process.pid, signal.SIGKILL)
                 time.sleep(0.1)
             reader.join(timeout=5)
+        logger.info(
+            "Task child exited task_run_id=%s pid=%s return_code=%s",
+            claimed.task_run_id,
+            process.pid,
+            process.returncode,
+        )
         (run_root / "child.json").unlink(missing_ok=True)
         result_messages = [
             message for message in messages if message.get("type") == "RESULT"
         ]
         if result_messages:
-            return _decode_result(result_messages[-1]["payload"])
+            result = _decode_result(result_messages[-1]["payload"])
+            logger.info(
+                "Task child result received task_run_id=%s outcome=%s",
+                claimed.task_run_id,
+                result.outcome.value,
+            )
+            return result
         code = (
             ExecutionErrorCode.CANCELLED
             if cancellation.is_cancelled
@@ -170,15 +202,18 @@ class ChildProcessPlanExecutor:
         )
         return TaskExecutionResult.now(
             task_id=stored.plan.task_id,
-            outcome=TaskOutcome.CANCELLED
-            if cancellation.is_cancelled
-            else TaskOutcome.WORKER_LOST,
+            outcome=(
+                TaskOutcome.CANCELLED
+                if cancellation.is_cancelled
+                else TaskOutcome.WORKER_LOST
+            ),
             started_at=datetime.now(timezone.utc),
             error=error,
         )
 
 
 def child_main(event_fd: int) -> int:
+    configure_worker_logging(child_process=True)
     request = json.loads(sys.stdin.readline())
     os.environ["AUTOGLM_WORKER_CHILD"] = "1"
     cancellation = CancellationToken()
@@ -186,6 +221,14 @@ def child_main(event_fd: int) -> int:
     outbox = DurableOutbox(request["outbox_db_path"])
     sealer = LocalSealer(request["sealing_key_path"])
     plan = ExecutionPlan.model_validate_json(Path(request["plan_path"]).read_bytes())
+    logger.info(
+        "Task child initializing task_run_id=%s task_type=%s case_count=%d "
+        "adb_serial=%s",
+        request["task_run_id"],
+        plan.task_type.value,
+        len(plan.test_run.cases) if plan.test_run else 0,
+        request["adb_serial"],
+    )
     durable_sink = OutboxLifecycleSink(
         outbox=outbox,
         task_run_id=UUID(request["task_run_id"]),
@@ -251,6 +294,7 @@ def child_main(event_fd: int) -> int:
             cancellation_token=cancellation,
             lifecycle_sink=sink,
             case_coordinator=coordinator,
+            run_started_already=bool(request.get("run_started_already")),
         )
         result = runner.execute(plan, task_run_id=request["task_run_id"])
         if timed_out.is_set() and result.outcome is TaskOutcome.CANCELLED:
@@ -270,6 +314,11 @@ def child_main(event_fd: int) -> int:
                 "application/zip",
             )
         _write_protocol(event_fd, {"type": "RESULT", "payload": _encode_result(result)})
+        logger.info(
+            "Task child completed task_run_id=%s outcome=%s",
+            request["task_run_id"],
+            result.outcome.value,
+        )
         return 0
     except Exception as exc:
         error = (
@@ -279,11 +328,15 @@ def child_main(event_fd: int) -> int:
                 ExecutionErrorCode.EXECUTION_ERROR, f"{type(exc).__name__}: {exc}"
             )
         )
-        result = TaskExecutionResult.now(
-            task_id=plan.task_id,
-            outcome=TaskOutcome.INFRA_ERROR,
-            started_at=datetime.now(timezone.utc),
-            error=error,
+        logger.exception(
+            "Task child failed task_run_id=%s error_code=%s",
+            request["task_run_id"],
+            error.code.value,
+        )
+        result = _failure_result_from_durable_events(
+            plan,
+            error,
+            outbox.events_for_run(request["task_run_id"]),
         )
         _write_protocol(event_fd, {"type": "RESULT", "payload": _encode_result(result)})
         return 1
@@ -291,6 +344,77 @@ def child_main(event_fd: int) -> int:
         timer.cancel()
         outbox.close()
         os.close(event_fd)
+
+
+def _failure_result_from_durable_events(
+    plan: ExecutionPlan,
+    error: ExecutionError,
+    events: tuple[dict[str, Any], ...],
+) -> TaskExecutionResult:
+    """Reconstruct TEST_RUN progress instead of returning an impossible 0-Case result."""
+    now = datetime.now(timezone.utc)
+    if plan.task_type is not TaskType.TEST_RUN or plan.test_run is None:
+        return TaskExecutionResult.now(
+            task_id=plan.task_id,
+            outcome=TaskOutcome.INFRA_ERROR,
+            started_at=now,
+            error=error,
+        )
+    finished: dict[str, dict[str, Any]] = {}
+    attempt_started: set[str] = set()
+    for event in events:
+        execution_case_id = event.get("execution_case_id")
+        if not isinstance(execution_case_id, str):
+            continue
+        if event.get("type") == "CASE_ATTEMPT_STARTED":
+            attempt_started.add(execution_case_id)
+        elif event.get("type") == "CASE_FINISHED":
+            finished[execution_case_id] = event.get("data") or {}
+    cases: list[CaseExecutionResult] = []
+    not_run: list[UUID] = []
+    for case in plan.test_run.cases:
+        case_id = str(case.execution_case_id)
+        fact = finished.get(case_id)
+        if fact is not None:
+            try:
+                outcome = CaseOutcome(str(fact["outcome"]))
+            except (KeyError, ValueError) as exc:
+                raise ExecutionError(
+                    ExecutionErrorCode.EXECUTION_ERROR,
+                    "Durable CASE_FINISHED has an invalid outcome",
+                ) from exc
+            flaky = bool(fact.get("flaky", False))
+        elif case_id in attempt_started:
+            # Platform NORMAL termination closes this RUNNING Case as INFRA_ERROR.
+            outcome = CaseOutcome.INFRA_ERROR
+            flaky = False
+        else:
+            not_run.append(case.execution_case_id)
+            continue
+        cases.append(
+            CaseExecutionResult(
+                execution_case_id=case.execution_case_id,
+                ordinal=case.ordinal,
+                outcome=outcome,
+                flaky=flaky,
+                attempts=(
+                    AttemptResult(
+                        outcome,
+                        "Reconstructed from durable lifecycle events after child failure",
+                        error if outcome is CaseOutcome.INFRA_ERROR else None,
+                    ),
+                ),
+            )
+        )
+    return TaskExecutionResult(
+        task_id=plan.task_id,
+        outcome=TaskOutcome.INFRA_ERROR,
+        started_at=now,
+        finished_at=now,
+        cases=tuple(cases),
+        error=error,
+        not_run_execution_case_ids=tuple(not_run),
+    )
 
 
 def _install_child_guards(cancellation: CancellationToken) -> None:
@@ -326,6 +450,15 @@ def _signal_group(pgid: int, sig: signal.Signals) -> None:
         os.killpg(pgid, sig)
     except ProcessLookupError:
         pass
+
+
+def _child_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    # The executor never downloads CI artifacts. Do not grant task code access
+    # to the parent-only GitLab Secret even though other model/Worker secrets
+    # are still required by the current child protocol.
+    environment.pop("AUTOGLM_GITLAB_TOKEN", None)
+    return environment
 
 
 def _write_protocol(fd: int, message: dict[str, Any]) -> None:
@@ -424,9 +557,11 @@ def _encode_result(result: TaskExecutionResult) -> dict[str, Any]:
             {
                 "outcome": result.adhoc_result.outcome.value,
                 "message": result.adhoc_result.message,
-                "error": result.adhoc_result.error.as_dict()
-                if result.adhoc_result.error
-                else None,
+                "error": (
+                    result.adhoc_result.error.as_dict()
+                    if result.adhoc_result.error
+                    else None
+                ),
             }
             if result.adhoc_result
             else None

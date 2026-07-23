@@ -50,8 +50,11 @@ class TaskExecutor:
         lifecycle_sink: LifecycleSink | None = None,
         before_case: Callable[[ExecutionCase], None] | None = None,
         after_case: Callable[[ExecutionCase], None] | None = None,
-        on_case_finished: Callable[[ExecutionCase, CaseExecutionResult], None]
-        | None = None,
+        on_case_finished: (
+            Callable[[ExecutionCase, CaseExecutionResult], None] | None
+        ) = None,
+        emit_run_started: bool = True,
+        bind_test_run_boundaries: bool = False,
     ) -> None:
         self.attempt_runner = attempt_runner
         self.adhoc_runner = adhoc_runner
@@ -60,6 +63,8 @@ class TaskExecutor:
         self.before_case = before_case
         self.after_case = after_case
         self.on_case_finished = on_case_finished
+        self.emit_run_started = emit_run_started
+        self.bind_test_run_boundaries = bind_test_run_boundaries
 
     def execute(self, plan: ExecutionPlan) -> TaskExecutionResult:
         started_at = datetime.now(timezone.utc)
@@ -68,19 +73,32 @@ class TaskExecutor:
             if plan.task_type is TaskType.ADHOC and plan.adhoc
             else None
         )
-        self.lifecycle_sink.emit(
-            "RUN_STARTED",
-            {
-                "task_id": str(plan.task_id),
-                "plan_id": str(plan.plan_id),
-                "task_type": plan.task_type.value,
-                **(
-                    {"execution_item_id": execution_item_id}
-                    if execution_item_id
-                    else {}
-                ),
-            },
-        )
+        boundary_execution_case_id = None
+        if (
+            self.bind_test_run_boundaries
+            and plan.task_type is TaskType.TEST_RUN
+            and plan.test_run
+        ):
+            boundary_execution_case_id = str(plan.test_run.cases[0].execution_case_id)
+        if self.emit_run_started:
+            self.lifecycle_sink.emit(
+                "RUN_STARTED",
+                {
+                    "task_id": str(plan.task_id),
+                    "plan_id": str(plan.plan_id),
+                    "task_type": plan.task_type.value,
+                    **(
+                        {"execution_case_id": boundary_execution_case_id}
+                        if boundary_execution_case_id
+                        else {}
+                    ),
+                    **(
+                        {"execution_item_id": execution_item_id}
+                        if execution_item_id
+                        else {}
+                    ),
+                },
+            )
         try:
             if plan.task_type is TaskType.ADHOC:
                 result = self._execute_adhoc(plan, started_at)
@@ -94,11 +112,37 @@ class TaskExecutor:
                 started_at=started_at,
                 error=error,
             )
+        if result.error is not None:
+            self.lifecycle_sink.emit(
+                "RUN_ERROR",
+                {
+                    "task_id": str(plan.task_id),
+                    "error_code": result.error.code.value,
+                    "error_category": result.error.category.value,
+                    "message": result.error.message,
+                    "retryable": result.error.retryable,
+                    **(
+                        {"execution_case_id": boundary_execution_case_id}
+                        if boundary_execution_case_id
+                        else {}
+                    ),
+                    **(
+                        {"execution_item_id": execution_item_id}
+                        if execution_item_id
+                        else {}
+                    ),
+                },
+            )
         self.lifecycle_sink.emit(
             "RUN_FINISHED",
             {
                 "task_id": str(plan.task_id),
                 "outcome": result.outcome.value,
+                **(
+                    {"execution_case_id": boundary_execution_case_id}
+                    if boundary_execution_case_id
+                    else {}
+                ),
                 **(
                     {"execution_item_id": execution_item_id}
                     if execution_item_id
@@ -154,6 +198,18 @@ class TaskExecutor:
                     self.on_case_finished(case, case_result)
             except ExecutionError as error:
                 fatal_error = error
+                # The platform has not accepted this Case checkpoint. For an
+                # infrastructure termination it will close the still-RUNNING
+                # Case as INFRA_ERROR, so the local aggregate must describe the
+                # same fact instead of retaining the pre-checkpoint outcome.
+                if _task_outcome_from_error(error) is TaskOutcome.INFRA_ERROR:
+                    case_results[-1] = CaseExecutionResult(
+                        execution_case_id=case_result.execution_case_id,
+                        ordinal=case_result.ordinal,
+                        outcome=CaseOutcome.INFRA_ERROR,
+                        flaky=False,
+                        attempts=case_result.attempts,
+                    )
                 not_run.extend(
                     item.execution_case_id
                     for item in plan.test_run.cases[position + 1 :]

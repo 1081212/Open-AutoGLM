@@ -13,6 +13,7 @@ from pathlib import Path
 from uuid import UUID
 
 from phone_agent.execution.errors import ExecutionError, ExecutionErrorCode
+from phone_agent.execution.models import SUPPORTED_EXECUTION_VERSIONS
 from phone_agent.worker.config import RuntimeEnvironment, parse_runtime_environment
 from phone_agent.worker.heartbeat import WORKER_VERSION
 from phone_agent.worker.outbox import DurableOutbox, LocalSealer
@@ -79,7 +80,7 @@ class StartupRecovery:
             "max_concurrency": 1,
             "active_task_count": 0,
             "current_task_run_id": None,
-            "supported_execution_versions": ["autoglm.execution.v1"],
+            "supported_execution_versions": list(SUPPORTED_EXECUTION_VERSIONS),
             "devices": [],
             "outbox_pending": self.outbox.pending_count(),
             "spool_free_bytes": shutil.disk_usage(self.spool_root).free,

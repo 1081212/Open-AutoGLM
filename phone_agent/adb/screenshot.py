@@ -1,18 +1,22 @@
 """Screenshot utilities for capturing Android device screen."""
 
 import base64
+import logging
 import os
 import subprocess
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Tuple
 
 from PIL import Image
 
 from phone_agent.adb.command import AdbCommandAdapter
 from phone_agent.execution.errors import ExecutionError, ExecutionErrorCode
+
+logger = logging.getLogger(__name__)
+_WORKER_SCREENSHOT_ATTEMPTS = 3
 
 
 @dataclass
@@ -121,19 +125,55 @@ def _get_strict_worker_screenshot(device_id: str | None, timeout: int) -> Screen
             ExecutionErrorCode.DEVICE_NOT_FOUND,
             "Worker screenshot requires an explicitly selected ADB serial",
         )
-    result = AdbCommandAdapter().run_bytes(
-        device_id,
-        ["exec-out", "screencap", "-p"],
-        timeout=timeout,
-    )
-    if not result.stdout:
-        raise ExecutionError(
-            ExecutionErrorCode.DEVICE_DISCONNECTED,
-            "ADB screenshot returned no data",
-            retryable=True,
-        )
+    adapter = AdbCommandAdapter()
+    last_error: ExecutionError | None = None
+    for attempt in range(1, _WORKER_SCREENSHOT_ATTEMPTS + 1):
+        try:
+            result = adapter.run_bytes(
+                device_id,
+                ["exec-out", "screencap", "-p"],
+                timeout=timeout,
+            )
+            if not result.stdout:
+                raise ExecutionError(
+                    ExecutionErrorCode.DEVICE_DISCONNECTED,
+                    "ADB screenshot returned no data",
+                    retryable=True,
+                )
+            return _decode_worker_screenshot(result.stdout)
+        except ExecutionError as error:
+            last_error = error
+        try:
+            adapter.get_state(device_id, timeout=min(5, timeout))
+        except ExecutionError as state_error:
+            raise ExecutionError(
+                ExecutionErrorCode.DEVICE_DISCONNECTED,
+                f"ADB device became unavailable after screenshot failure: "
+                f"{state_error.message}",
+                retryable=True,
+            ) from state_error
+        if attempt < _WORKER_SCREENSHOT_ATTEMPTS:
+            logger.warning(
+                "ADB screenshot failed while device remains online; retrying "
+                "adb_serial=%s attempt=%d/%d error_code=%s",
+                device_id,
+                attempt,
+                _WORKER_SCREENSHOT_ATTEMPTS,
+                last_error.code.value,
+            )
+            time.sleep(0.25 * attempt)
+    assert last_error is not None
+    raise ExecutionError(
+        last_error.code,
+        f"{last_error.message} after {_WORKER_SCREENSHOT_ATTEMPTS} attempts "
+        "while device remained online",
+        retryable=True,
+    ) from last_error
+
+
+def _decode_worker_screenshot(payload: bytes) -> Screenshot:
     try:
-        image = Image.open(BytesIO(result.stdout))
+        image = Image.open(BytesIO(payload))
         image.load()
         width, height = image.size
         buffered = BytesIO()

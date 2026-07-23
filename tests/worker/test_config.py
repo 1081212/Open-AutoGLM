@@ -64,3 +64,45 @@ def test_claim_enabled_boolean(monkeypatch, tmp_path, value, expected):
     monkeypatch.setenv("AUTOGLM_WORKER_CLAIM_ENABLED", value)
 
     assert WorkerConfig.from_env().claim_enabled is expected
+
+
+def test_spool_gc_defaults_and_overrides(monkeypatch, tmp_path):
+    base_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("AUTOGLM_RUNTIME_ENVIRONMENT", "dev")
+    config = WorkerConfig.from_env()
+    assert config.spool_retention_days == 7
+    assert config.spool_max_bytes == 20 * 1024 * 1024 * 1024
+    assert config.spool_min_free_bytes == 10 * 1024 * 1024 * 1024
+    assert config.spool_gc_interval_seconds == 3600
+
+    monkeypatch.setenv("AUTOGLM_WORKER_SPOOL_RETENTION_DAYS", "3")
+    monkeypatch.setenv("AUTOGLM_WORKER_SPOOL_MAX_BYTES", "1234")
+    monkeypatch.setenv("AUTOGLM_WORKER_SPOOL_MIN_FREE_BYTES", "567")
+    monkeypatch.setenv("AUTOGLM_WORKER_SPOOL_GC_INTERVAL_SECONDS", "60")
+    config = WorkerConfig.from_env()
+    assert config.spool_retention_days == 3
+    assert config.spool_max_bytes == 1234
+    assert config.spool_min_free_bytes == 567
+    assert config.spool_gc_interval_seconds == 60
+
+
+def test_gitlab_secret_configuration_is_optional_until_v2_task(monkeypatch, tmp_path):
+    base_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("AUTOGLM_RUNTIME_ENVIRONMENT", "dev")
+    config = WorkerConfig.from_env()
+    assert config.gitlab_base_url is None
+    assert config.gitlab_token is None
+
+    monkeypatch.setenv("AUTOGLM_GITLAB_BASE_URL", "https://gitlab.example.com")
+    monkeypatch.setenv("AUTOGLM_GITLAB_TOKEN", "local-read-only-token")
+    config = WorkerConfig.from_env()
+    assert config.gitlab_base_url == "https://gitlab.example.com"
+    assert config.gitlab_token == "local-read-only-token"
+
+
+def test_gitlab_base_url_must_be_safe_https(monkeypatch, tmp_path):
+    base_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("AUTOGLM_RUNTIME_ENVIRONMENT", "dev")
+    monkeypatch.setenv("AUTOGLM_GITLAB_BASE_URL", "http://gitlab.example.com")
+    with pytest.raises(ValueError, match="https"):
+        WorkerConfig.from_env()

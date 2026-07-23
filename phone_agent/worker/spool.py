@@ -14,7 +14,6 @@ from pydantic import ValidationError
 from phone_agent.execution.errors import ExecutionError, ExecutionErrorCode
 from phone_agent.execution.models import ExecutionPlan, TaskType
 
-
 MAX_COMPRESSED_SIZE = 16 * 1024 * 1024
 MAX_CANONICAL_SIZE = 64 * 1024 * 1024
 MAX_CASE_COUNT = 1000
@@ -70,8 +69,13 @@ class PlanSpool:
                     if not chunk:
                         continue
                     compressed_size += len(chunk)
-                    if compressed_size > descriptor.compressed_size or compressed_size > MAX_COMPRESSED_SIZE:
-                        raise self._invalid("compressed plan exceeds declared or configured size")
+                    if (
+                        compressed_size > descriptor.compressed_size
+                        or compressed_size > MAX_COMPRESSED_SIZE
+                    ):
+                        raise self._invalid(
+                            "compressed plan exceeds declared or configured size"
+                        )
                     compressed_hash.update(chunk)
                     handle.write(chunk)
                 handle.flush()
@@ -87,14 +91,21 @@ class PlanSpool:
 
             canonical_hash = hashlib.sha256()
             canonical_size = 0
-            with gzip.open(compressed_path, "rb") as source, canonical_part.open("wb") as target:
+            with gzip.open(compressed_path, "rb") as source, canonical_part.open(
+                "wb"
+            ) as target:
                 while True:
                     chunk = source.read(1024 * 1024)
                     if not chunk:
                         break
                     canonical_size += len(chunk)
-                    if canonical_size > descriptor.canonical_size or canonical_size > MAX_CANONICAL_SIZE:
-                        raise self._invalid("canonical plan exceeds declared or configured size")
+                    if (
+                        canonical_size > descriptor.canonical_size
+                        or canonical_size > MAX_CANONICAL_SIZE
+                    ):
+                        raise self._invalid(
+                            "canonical plan exceeds declared or configured size"
+                        )
                     canonical_hash.update(chunk)
                     target.write(chunk)
                 target.flush()
@@ -113,7 +124,7 @@ class PlanSpool:
                 raise self._invalid(f"plan schema validation failed: {exc}") from exc
             self._validate_counts(plan, descriptor)
             if plan.target_requirements.device_type != "adb":
-                raise self._invalid("platform Worker v1 supports adb plans only")
+                raise self._invalid("platform Worker supports adb plans only")
             if str(plan.plan_id) != descriptor.plan_id:
                 raise self._invalid("plan_id does not match claim descriptor")
             os.replace(canonical_part, canonical_path)
@@ -126,8 +137,15 @@ class PlanSpool:
             compressed_part.unlink(missing_ok=True)
             canonical_part.unlink(missing_ok=True)
 
-    def write_claim_metadata(self, task_run_id: str, metadata: dict[str, object]) -> Path:
-        forbidden = {"lease_token", "artifact_upload_token", "authorization", "plaintext_dek"}
+    def write_claim_metadata(
+        self, task_run_id: str, metadata: dict[str, object]
+    ) -> Path:
+        forbidden = {
+            "lease_token",
+            "artifact_upload_token",
+            "authorization",
+            "plaintext_dek",
+        }
         if forbidden.intersection(key.lower() for key in metadata):
             raise ValueError("claim.json must not contain bearer credentials")
         path = self.spool_root / "task-runs" / task_run_id / "claim.json"
@@ -137,12 +155,26 @@ class PlanSpool:
 
     @staticmethod
     def _validate_descriptor(descriptor: PlanDescriptor) -> None:
-        if descriptor.compressed_size < 0 or descriptor.compressed_size > MAX_COMPRESSED_SIZE:
-            raise ExecutionError(ExecutionErrorCode.PLAN_INVALID, "compressed_size is outside v1 limit")
-        if descriptor.canonical_size < 0 or descriptor.canonical_size > MAX_CANONICAL_SIZE:
-            raise ExecutionError(ExecutionErrorCode.PLAN_INVALID, "canonical_size is outside v1 limit")
+        if (
+            descriptor.compressed_size < 0
+            or descriptor.compressed_size > MAX_COMPRESSED_SIZE
+        ):
+            raise ExecutionError(
+                ExecutionErrorCode.PLAN_INVALID,
+                "compressed_size is outside Worker limit",
+            )
+        if (
+            descriptor.canonical_size < 0
+            or descriptor.canonical_size > MAX_CANONICAL_SIZE
+        ):
+            raise ExecutionError(
+                ExecutionErrorCode.PLAN_INVALID,
+                "canonical_size is outside Worker limit",
+            )
         if not 0 <= descriptor.case_count <= MAX_CASE_COUNT:
-            raise ExecutionError(ExecutionErrorCode.PLAN_INVALID, "case_count is outside v1 limit")
+            raise ExecutionError(
+                ExecutionErrorCode.PLAN_INVALID, "case_count is outside Worker limit"
+            )
 
     @staticmethod
     def _validate_counts(plan: ExecutionPlan, descriptor: PlanDescriptor) -> None:
@@ -153,8 +185,13 @@ class PlanSpool:
         else:
             actual_cases = 0
             actual_items = 1
-        if (actual_cases, actual_items) != (descriptor.case_count, descriptor.item_count):
-            raise ExecutionError(ExecutionErrorCode.PLAN_INVALID, "plan item/case count mismatch")
+        if (actual_cases, actual_items) != (
+            descriptor.case_count,
+            descriptor.item_count,
+        ):
+            raise ExecutionError(
+                ExecutionErrorCode.PLAN_INVALID, "plan item/case count mismatch"
+            )
 
     @staticmethod
     def _invalid(message: str) -> ExecutionError:
@@ -170,9 +207,13 @@ def _verify_size_hash(
 ) -> None:
     expected = expected_hash.removeprefix("sha256:").lower()
     if actual_size != expected_size:
-        raise ExecutionError(ExecutionErrorCode.PLAN_HASH_MISMATCH, f"{label} size mismatch")
+        raise ExecutionError(
+            ExecutionErrorCode.PLAN_HASH_MISMATCH, f"{label} size mismatch"
+        )
     if actual_hash.lower() != expected:
-        raise ExecutionError(ExecutionErrorCode.PLAN_HASH_MISMATCH, f"{label} SHA-256 mismatch")
+        raise ExecutionError(
+            ExecutionErrorCode.PLAN_HASH_MISMATCH, f"{label} SHA-256 mismatch"
+        )
 
 
 def _atomic_write(path: Path, data: bytes) -> None:

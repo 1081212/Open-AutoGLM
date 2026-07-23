@@ -142,6 +142,11 @@ export AUTOGLM_MODEL_API_KEY='replace-with-model-credential'
 export AUTOGLM_JUDGE_API_KEY='replace-with-judge-credential'
 export AUTOGLM_MODEL_PROFILES_FILE=worker-model-profiles.yaml
 export AUTOGLM_WORKER_SPOOL_ROOT=worker_spool
+export AUTOGLM_WORKER_LOG_LEVEL=INFO
+
+# 仅 execution v2 的 GitLab CI APK 安装任务需要：
+export AUTOGLM_GITLAB_BASE_URL=https://gitlab.example.com
+export AUTOGLM_GITLAB_TOKEN='replace-with-read-only-artifact-token'
 ```
 
 3. 启动：
@@ -152,6 +157,10 @@ python3.10 worker.py
 ```
 
 `AUTOGLM_RUNTIME_ENVIRONMENT` 是必填项，只允许精确小写 `dev` 或 `prod`。`AUTOGLM_WORKER_ID` 和 credential 必须使用平台资源页创建的同一 Worker；ID 会写入环境 spool，后续配置与本地记录不一致时拒绝启动。验收无任务连接时先设置 `AUTOGLM_WORKER_CLAIM_ENABLED=false`，准备执行任务后改为 `true`。两个环境都使用 Redis DB 0，Worker 自动选择 `autoglm:dev:v1:` 或 `autoglm:prod:v1:` 前缀，不能手工填写 Redis 前缀。`worker_spool` 是基目录，实际数据自动写入 `worker_spool/dev` 或 `worker_spool/prod`，两个环境不会共用 worker ID、outbox 和本地密钥。
+
+Worker 同时声明 `autoglm.execution.v1` 和 `autoglm.execution.v2`。普通 v1 任务不读取任何 GitLab 配置；v2 任务必须由本机 Secret 提供只读 `AUTOGLM_GITLAB_TOKEN`，并要求 `AUTOGLM_GITLAB_BASE_URL` 与 Plan 中冻结仓库同源。Token 不会写入 Plan、spool、事件或日志，也不会传给任务子进程。当前暂时跳过 APK Manifest 元数据检查，完成冻结 Job、ZIP 安全、唯一 APK、大小和 SHA-256 校验后直接执行 `adb install -r -d`。Worker 只下载 Plan 冻结的 Job artifacts，不触发 Pipeline、不查询分支，也不选择 Plan 之外的 Job。
+
+Worker 默认以 `INFO` 级别同时输出控制台日志和环境隔离的滚动文件 `<spool>/<dev|prod>/worker.log`，单文件 20 MiB、保留 5 份；可通过 `AUTOGLM_WORKER_LOG_LEVEL=DEBUG|INFO|WARNING|ERROR` 调整。每个 Run 的子进程输出单独保存在 `<spool>/<environment>/task-runs/<task_run_id>/logs/stdout.log` 和 `stderr.log`。日志会按环境变量值脱敏 Worker credential、GitLab Token、模型 API Key 等 Secret，不记录 lease token、完整请求 payload 或签名上传 URL。
 
 从旧版升级时，如果 `worker_spool` 根目录直接存在 `worker.db`、`worker-id`、`sealing-key` 或 `task-runs`，新版会拒绝启动。请先确认这些数据属于 dev 还是 prod，再将整套文件一起迁入对应环境子目录；不能只移动数据库或重新生成 sealing key。
 

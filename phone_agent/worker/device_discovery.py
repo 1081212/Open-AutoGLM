@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from threading import RLock
@@ -9,6 +10,8 @@ from uuid import UUID
 
 from phone_agent.adb.command import AdbCommandAdapter
 from phone_agent.worker.identity import derive_device_uid
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +59,12 @@ class DeviceDiscoveryCache:
             )
         with self._lock:
             self._devices = discovered
+            logger.debug(
+                "ADB discovery refreshed worker_id=%s busy=%s device_count=%d",
+                self.worker_id,
+                worker_busy,
+                len(discovered),
+            )
             return tuple(self._devices.values())
 
     def heartbeat_snapshot(self, *, worker_busy: bool) -> tuple[dict[str, object], ...]:
@@ -71,7 +80,11 @@ class DeviceDiscoveryCache:
     def resolve_serial(self, device_uid: UUID | str) -> str | None:
         with self._lock:
             device = self._devices.get(str(device_uid))
-            return device.adb_serial if device and device.cached_state == "ONLINE" else None
+            return (
+                device.adb_serial
+                if device and device.cached_state == "ONLINE"
+                else None
+            )
 
     def probe_active(self, device_uid: UUID | str) -> None:
         serial = self.resolve_serial(device_uid)

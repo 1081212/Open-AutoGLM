@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import threading
 from dataclasses import dataclass, field
@@ -12,11 +13,14 @@ from uuid import UUID
 
 from phone_agent.execution.cancellation import CancellationToken
 from phone_agent.execution.errors import ExecutionError, ExecutionErrorCode
+from phone_agent.execution.models import SUPPORTED_EXECUTION_VERSIONS
 from phone_agent.worker.api_client import WorkerApiClient
 from phone_agent.worker.models import WorkerActivity
 from phone_agent.worker.config import RuntimeEnvironment, parse_runtime_environment
+from phone_agent.worker.time_utils import parse_aware_iso8601
 
 WORKER_VERSION = "0.3.0"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -106,7 +110,7 @@ class ControlHeartbeatLoop:
             "max_concurrency": 1,
             "active_task_count": 1 if task_run_id else 0,
             "current_task_run_id": task_run_id,
-            "supported_execution_versions": ["autoglm.execution.v1"],
+            "supported_execution_versions": list(SUPPORTED_EXECUTION_VERSIONS),
             "devices": list(self.device_snapshot(busy)),
             "outbox_pending": self.outbox_pending(),
             "spool_free_bytes": shutil.disk_usage(self.spool_root).free,
@@ -199,19 +203,23 @@ class RunLeaseLoop:
                 if error.code is ExecutionErrorCode.LEASE_LOST:
                     self._lose_lease(str(error))
                     return
+            except ValueError:
+                self._lose_lease(
+                    "Platform returned an invalid lease_expires_at timestamp"
+                )
+                return
             if datetime.now(timezone.utc) >= self.lease_expires_at - self.safety:
                 self._lose_lease("Lease could not be renewed before the safety window")
                 return
             self._stop.wait(self.renew_after_seconds)
 
     def _lose_lease(self, message: str) -> None:
+        logger.error(
+            "Run lease lost task_run_id=%s reason=%s", self.task_run_id, message
+        )
         self.lost_error = ExecutionError(ExecutionErrorCode.LEASE_LOST, message)
         self.cancellation_token.cancel(message)
 
 
 def _parse_time(value: str) -> datetime:
-    normalized = value.replace("Z", "+00:00")
-    result = datetime.fromisoformat(normalized)
-    if result.tzinfo is None:
-        raise ValueError("lease_expires_at must include timezone")
-    return result.astimezone(timezone.utc)
+    return parse_aware_iso8601(value, "lease_expires_at").astimezone(timezone.utc)

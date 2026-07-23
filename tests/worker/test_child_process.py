@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from phone_agent.execution.errors import ExecutionError, ExecutionErrorCode
 from phone_agent.execution.models import CaseOutcome
 from phone_agent.execution.result import (
     AttemptResult,
@@ -13,9 +14,21 @@ from phone_agent.execution.result import (
 from phone_agent.worker.child_process import (
     ChildProcessPlanExecutor,
     _ChildLifecycleSink,
+    _child_environment,
     _decode_result,
     _encode_result,
+    _failure_result_from_durable_events,
 )
+
+
+def test_task_child_does_not_inherit_gitlab_download_token(monkeypatch):
+    monkeypatch.setenv("AUTOGLM_GITLAB_TOKEN", "parent-only-secret")
+    monkeypatch.setenv("AUTOGLM_WORKER_CREDENTIAL", "required-worker-secret")
+
+    environment = _child_environment()
+
+    assert "AUTOGLM_GITLAB_TOKEN" not in environment
+    assert environment["AUTOGLM_WORKER_CREDENTIAL"] == "required-worker-secret"
 
 
 def test_child_result_protocol_round_trip_preserves_duplicate_display_cases():
@@ -47,6 +60,35 @@ def test_child_result_protocol_round_trip_preserves_duplicate_display_cases():
     assert len({case.execution_case_id for case in decoded.cases}) == 200
 
 
+def test_child_failure_reconstructs_finished_running_and_not_run_cases(
+    test_run_plan,
+):
+    first, second = test_run_plan.test_run.cases
+    error = ExecutionError(ExecutionErrorCode.EXECUTION_ERROR, "report failed")
+    result = _failure_result_from_durable_events(
+        test_run_plan,
+        error,
+        (
+            {
+                "type": "CASE_FINISHED",
+                "execution_case_id": str(first.execution_case_id),
+                "data": {"outcome": "REVIEW", "flaky": False},
+            },
+            {
+                "type": "CASE_ATTEMPT_STARTED",
+                "execution_case_id": str(second.execution_case_id),
+                "data": {},
+            },
+        ),
+    )
+
+    assert [case.outcome for case in result.cases] == [
+        CaseOutcome.REVIEW,
+        CaseOutcome.INFRA_ERROR,
+    ]
+    assert result.not_run_execution_case_ids == ()
+
+
 class FakeDurableSink:
     def __init__(self):
         self.events = []
@@ -74,8 +116,7 @@ def test_adhoc_position_uses_platform_names_and_allowed_states(monkeypatch):
         message["payload"]["current_execution_case_id"] is None for message in protocol
     )
     assert all(
-        set(message["payload"])
-        == {"current_execution_case_id", "adhoc_item_state"}
+        set(message["payload"]) == {"current_execution_case_id", "adhoc_item_state"}
         for message in protocol
     )
     assert "FINISHED" not in str(protocol)

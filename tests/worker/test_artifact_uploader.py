@@ -153,6 +153,10 @@ def test_prepare_encrypts_and_keeps_credentials_out_of_payload(tmp_path):
     assert "https://cos.example" not in serialized_payload
     assert item.artifact_upload_credential_ref
     assert api.initiate_payload["initiate_idempotency_key"] == "attempt:step:screenshot"
+    assert api.initiate_payload["execution_case_id"] == str(source.execution_case_id)
+    assert api.initiate_payload["case_attempt_id"] == str(source.case_attempt_id)
+    assert api.initiate_payload["case_attempt_no"] == source.case_attempt_no
+    assert api.initiate_payload["step_id"] == str(source.step_id)
     assert set(api.initiate_payload) == {
         "worker_id",
         "instance_id",
@@ -221,9 +225,11 @@ def test_upload_then_complete_uses_ciphertext_and_scoped_token(tmp_path):
     source, api, outbox, sealer, _ = prepare(tmp_path)
     session = FakeSession([200])
     pump = ArtifactOutboxPump(api, outbox, sealer, session=session)
+    ciphertext_path = Path(outbox.due()[0].local_path)
 
     assert pump.flush_item(outbox.due()[0]) is True
     assert outbox.pending_count() == 0
+    assert not ciphertext_path.exists()
     assert session.puts[0][0] == "https://cos.example/first"
     assert session.puts[0][1] != source.path.read_bytes()
     assert api.completed[0][2] == "artifact-secret-token"

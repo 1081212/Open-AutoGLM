@@ -5,8 +5,12 @@ from phone_agent.worker.outbox import DurableOutbox, LocalSealer
 
 def test_enqueue_is_idempotent_and_acknowledge(tmp_path):
     outbox = DurableOutbox(tmp_path / "worker.db")
-    first = outbox.enqueue(idempotency_key="run:producer:1", kind="EVENT", payload={"x": 1})
-    second = outbox.enqueue(idempotency_key="run:producer:1", kind="EVENT", payload={"x": 2})
+    first = outbox.enqueue(
+        idempotency_key="run:producer:1", kind="EVENT", payload={"x": 1}
+    )
+    second = outbox.enqueue(
+        idempotency_key="run:producer:1", kind="EVENT", payload={"x": 2}
+    )
     assert first == second
     assert len(outbox.due()) == 1
     assert outbox.due()[0].payload == {"x": 1}
@@ -24,7 +28,9 @@ def test_credentials_are_sealed_and_recoverable(tmp_path):
 
 def test_fence_rejection_orphans_run_writes_but_not_artifact_upload(tmp_path):
     outbox = DurableOutbox(tmp_path / "worker.db")
-    outbox.enqueue(idempotency_key="event", kind="EVENT", payload={}, task_run_id="run-1")
+    outbox.enqueue(
+        idempotency_key="event", kind="EVENT", payload={}, task_run_id="run-1"
+    )
     outbox.enqueue(
         idempotency_key="artifact",
         kind="ARTIFACT_COMPLETE",
@@ -42,3 +48,27 @@ def test_producer_positions_are_persistent(tmp_path):
     assert outbox.next_producer_sequence("producer-b") == 1
 
     assert outbox.producer_positions() == {"producer-a": 2, "producer-b": 1}
+
+
+def test_terminal_run_artifact_uploads_are_suspended_and_can_be_resumed(tmp_path):
+    outbox = DurableOutbox(tmp_path / "worker.db")
+    run_id = "run-completed"
+    outbox.save_task_run_state(
+        run_id,
+        state="COMPLETED",
+        claim={"lease_credential_ref": "lease-ref"},
+    )
+    outbox.enqueue(
+        idempotency_key="artifact:upload",
+        kind="ARTIFACT_UPLOAD",
+        payload={"artifact_id": "artifact-id"},
+        task_run_id=run_id,
+    )
+
+    assert len(outbox.due()) == 1
+    assert outbox.suspend_terminal_run_artifact_uploads() == 1
+    assert outbox.due() == ()
+    assert outbox.pending_count() == 0
+
+    assert outbox.resume_suspended_artifact_uploads(run_id) == 1
+    assert len(outbox.due()) == 1

@@ -6,7 +6,9 @@ from enum import Enum
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from phone_agent.worker.time_utils import parse_aware_iso8601
 
 
 class StrictModel(BaseModel):
@@ -35,7 +37,7 @@ class DispatchNotification(StrictModel):
 
 
 class ClaimPlanDescriptor(StrictModel):
-    schema_version: Literal["autoglm.execution.v1"]
+    schema_version: Literal["autoglm.execution.v1", "autoglm.execution.v2"]
     plan_id: UUID
     download_url: str
     wire_media_type: Literal["application/vnd.autoglm.execution-plan+gzip"]
@@ -60,9 +62,18 @@ class ClaimResponse(StrictModel):
     task_run_id: UUID | None = None
     lease_token: str | None = None
     fencing_token: int | None = None
+    run_started_at: str | None = None
     lease_expires_at: str | None = None
     renew_after_seconds: int | None = None
     plan: ClaimPlanDescriptor | None = None
+
+    @field_validator("run_started_at")
+    @classmethod
+    def validate_run_started_at(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parse_aware_iso8601(value, "run_started_at")
+        return value
 
     @model_validator(mode="after")
     def validate_claim(self) -> "ClaimResponse":
@@ -74,6 +85,7 @@ class ClaimResponse(StrictModel):
             self.task_run_id,
             self.lease_token,
             self.fencing_token,
+            self.run_started_at,
             self.lease_expires_at,
             self.renew_after_seconds,
             self.plan,

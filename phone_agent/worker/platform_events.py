@@ -2,12 +2,50 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
 from phone_agent.worker.identity import uuid7
 from phone_agent.worker.outbox import DurableOutbox
+
+logger = logging.getLogger(__name__)
+
+# This allowlist mirrors platform TaskRunEventService.EVENT_TYPES. Internal
+# lifecycle telemetry must be filtered before allocating producer_seq;
+# filtering during send would create permanent sequence gaps.
+PLATFORM_EVENT_TYPES = frozenset(
+    {
+        "RUN_STARTED",
+        "CASE_STARTED",
+        "CASE_ATTEMPT_STARTED",
+        "STEP_STARTED",
+        "SCREEN_CAPTURED",
+        "ACTION_RECORDED",
+        "STEP_FINISHED",
+        "CASE_ATTEMPT_FINISHED",
+        "CASE_FINISHED",
+        "ARTIFACT_STAGED",
+        "ARTIFACT_UPLOADED",
+        "CANCEL_ACKNOWLEDGED",
+        "RUN_FINISHED",
+        "RUN_ERROR",
+    }
+)
+
+_SENSITIVE_KEY = re.compile(
+    r"(?i)(thinking|password|passwd|cookie|authorization|api[_-]?key|"
+    r"(?:^|[_-])token(?:$|[_-])|secret|credential)"
+)
+_LABELLED_SECRET = re.compile(
+    r"(?i)(password|passwd|cookie|authorization|api[_ -]?key|"
+    r"gitlab[_ -]?token|lease[_ -]?token|worker[_ -]?credential|secret)"
+    r"\s*[:=]\s*[^\s,;]+"
+)
+_INPUT_ACTIONS = frozenset({"type", "type_name", "typeintoelement", "input"})
 
 
 class OutboxLifecycleSink:
@@ -31,7 +69,15 @@ class OutboxLifecycleSink:
         )
 
     def emit(self, event_type: str, data: dict[str, Any]) -> None:
-        event_data = dict(data)
+        if event_type not in PLATFORM_EVENT_TYPES:
+            logger.debug(
+                "Lifecycle event retained as local telemetry only "
+                "task_run_id=%s event_type=%s",
+                self.task_run_id,
+                event_type,
+            )
+            return
+        event_data = _sanitize_event_data(data)
         if self.adhoc_execution_item_id:
             forbidden = (
                 "execution_case_id",
@@ -77,6 +123,41 @@ class OutboxLifecycleSink:
             producer_id=str(self.producer_id),
             producer_seq=sequence,
         )
+
+
+def _sanitize_event_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Remove model reasoning and bearer/user secrets before durable storage."""
+    known_secrets = tuple(
+        value
+        for key, value in os.environ.items()
+        if value and _SENSITIVE_KEY.search(key) and len(value) >= 4
+    )
+
+    def clean(value: Any, key: str | None = None) -> Any:
+        if key and _SENSITIVE_KEY.search(key):
+            return "[REDACTED]"
+        if isinstance(value, dict):
+            result = {str(k): clean(v, str(k)) for k, v in value.items()}
+            action_name = str(
+                value.get("action") or value.get("_metadata") or ""
+            ).lower()
+            if action_name in _INPUT_ACTIONS:
+                for input_key in ("text", "input_text"):
+                    if input_key in result:
+                        result[input_key] = "[REDACTED]"
+            return result
+        if isinstance(value, (list, tuple)):
+            return [clean(item) for item in value]
+        if isinstance(value, str):
+            rendered = value
+            for secret in known_secrets:
+                rendered = rendered.replace(secret, "[REDACTED]")
+            return _LABELLED_SECRET.sub(
+                lambda match: f"{match.group(1)}=[REDACTED]", rendered
+            )
+        return value
+
+    return clean(dict(data))
 
 
 class OutboxPump:

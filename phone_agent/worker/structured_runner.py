@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -26,10 +27,10 @@ from phone_agent.reporting import TestRunReporter
 from phone_agent.worker.model_profiles import ModelProfileStore
 from phone_agent.worker.status_judge import StructuredStatusJudge
 
-
 _STATUS = re.compile(
     r"^\s*(?:STATUS|状态)\s*[:：]\s*(PASS|SKIPPED|BLOCKED|FAIL|REVIEW)\b", re.I | re.M
 )
+logger = logging.getLogger(__name__)
 
 
 class StructuredPlanRunner:
@@ -43,6 +44,7 @@ class StructuredPlanRunner:
         lifecycle_sink: LifecycleSink | None = None,
         adb: AdbCommandAdapter | None = None,
         case_coordinator=None,
+        run_started_already: bool = False,
     ) -> None:
         self.profiles = profiles
         self.adb_serial = adb_serial
@@ -51,12 +53,23 @@ class StructuredPlanRunner:
         self.lifecycle_sink = lifecycle_sink or NullLifecycleSink()
         self.adb = adb or AdbCommandAdapter()
         self.case_coordinator = case_coordinator
+        self.run_started_already = run_started_already
         self._agent: PhoneAgent | None = None
         self._reporter: TestRunReporter | None = None
         self._judge: StructuredStatusJudge | None = None
 
     def execute(self, plan: ExecutionPlan, *, task_run_id: str) -> TaskExecutionResult:
         options = plan.execution_options
+        logger.info(
+            "Structured execution starting task_run_id=%s task_type=%s "
+            "case_count=%d vision_profile=%s judge_enabled=%s reset_policy=%s",
+            task_run_id,
+            plan.task_type.value,
+            len(plan.test_run.cases) if plan.test_run else 0,
+            plan.model_profiles.vision_profile,
+            options.status_judge_enabled,
+            plan.target_requirements.reset_policy.type,
+        )
         model_config = self.profiles.resolve(
             plan.model_profiles.vision_profile,
             lang=options.language,
@@ -126,8 +139,19 @@ class StructuredPlanRunner:
                 on_case_finished=(
                     self.case_coordinator.checkpoint if self.case_coordinator else None
                 ),
+                emit_run_started=not self.run_started_already,
+                bind_test_run_boundaries=self.run_started_already,
             )
-            return executor.execute(plan)
+            result = executor.execute(plan)
+            logger.info(
+                "Structured execution finished task_run_id=%s outcome=%s "
+                "completed_cases=%d not_run_cases=%d",
+                task_run_id,
+                result.outcome.value,
+                len(result.cases),
+                len(result.not_run_execution_case_ids),
+            )
+            return result
         finally:
             reporter.finish_run()
             self._agent = None
@@ -138,6 +162,14 @@ class StructuredPlanRunner:
         self, plan: ExecutionPlan, case: ExecutionCase, attempt_no: int
     ) -> AttemptResult:
         assert self._agent is not None and self._reporter is not None
+        logger.info(
+            "Case attempt starting case=%s execution_case_id=%s ordinal=%d "
+            "attempt_no=%d",
+            case.display_id,
+            case.execution_case_id,
+            case.ordinal,
+            attempt_no,
+        )
         self._apply_reset(plan)
         attempt_id = None
         if self.case_coordinator:
@@ -171,9 +203,19 @@ class StructuredPlanRunner:
         )
         last_status = "REVIEW"
         messages: list[str] = []
+        active_step: ExecutionStep | None = None
+        active_step_started: float | None = None
+        active_step_finished = False
         try:
             for step in case.steps:
                 step_started = time.monotonic()
+                logger.info(
+                    "Step starting case=%s attempt_no=%d step_index=%d step_id=%s",
+                    case.display_id,
+                    attempt_no,
+                    step.index,
+                    step.step_id,
+                )
                 self.cancellation_token.raise_if_cancelled()
                 self.lifecycle_sink.emit(
                     "STEP_STARTED",
@@ -185,6 +227,9 @@ class StructuredPlanRunner:
                         "step_index": step.index,
                     },
                 )
+                active_step = step
+                active_step_started = step_started
+                active_step_finished = False
                 reporter.begin_test_step(step.index)
                 self._agent.agent_config.run_context.update(
                     {
@@ -240,6 +285,7 @@ class StructuredPlanRunner:
                     judge_completion_tokens=judge_completion_tokens,
                     judge_total_tokens=judge_total_tokens,
                 )
+                duration_ms = max(0, round((time.monotonic() - step_started) * 1000))
                 self.lifecycle_sink.emit(
                     "STEP_FINISHED",
                     {
@@ -249,16 +295,28 @@ class StructuredPlanRunner:
                         "step_id": str(step.step_id),
                         "outcome": status,
                         "message": message,
-                        "duration_ms": max(
-                            0, round((time.monotonic() - step_started) * 1000)
-                        ),
+                        "duration_ms": duration_ms,
                         "vision_tokens": vision_total_tokens,
                         "judge_tokens": judge_total_tokens,
                     },
                 )
+                active_step_finished = True
+                logger.info(
+                    "Step finished case=%s attempt_no=%d step_index=%d "
+                    "outcome=%s duration_ms=%d vision_tokens=%d judge_tokens=%d",
+                    case.display_id,
+                    attempt_no,
+                    step.index,
+                    status,
+                    duration_ms,
+                    vision_total_tokens,
+                    judge_total_tokens,
+                )
                 messages.append(f"{step.index}. {status}: {message}")
                 last_status = status
                 self._agent.reset()
+                active_step = None
+                active_step_started = None
                 if status in {"FAIL", "BLOCKED"}:
                     break
             final_message = (
@@ -276,8 +334,34 @@ class StructuredPlanRunner:
                     Path(case_report.attempts[-1].artifacts_dir),
                 )
             self._emit_attempt_finished(case, attempt_no, attempt_id, result)
+            logger.info(
+                "Case attempt finished case=%s execution_case_id=%s "
+                "attempt_no=%d outcome=%s",
+                case.display_id,
+                case.execution_case_id,
+                attempt_no,
+                result.outcome.value,
+            )
             return result
         except ExecutionError as error:
+            if active_step is not None and not active_step_finished:
+                self._emit_failed_step_finished(
+                    case=case,
+                    attempt_no=attempt_no,
+                    attempt_id=attempt_id,
+                    step=active_step,
+                    started_at=active_step_started,
+                    error=error,
+                )
+            logger.error(
+                "Case attempt failed case=%s execution_case_id=%s "
+                "attempt_no=%d error_code=%s message=%s",
+                case.display_id,
+                case.execution_case_id,
+                attempt_no,
+                error.code.value,
+                error.message,
+            )
             if reporter.current_case:
                 reporter.finish_case(f"STATUS: REVIEW\nREASON: {error}")
             result = AttemptResult(_error_outcome(error), str(error), error)
@@ -291,10 +375,25 @@ class StructuredPlanRunner:
             self._emit_attempt_finished(case, attempt_no, attempt_id, result)
             return result
         except Exception as exc:
+            logger.exception(
+                "Case attempt crashed case=%s execution_case_id=%s attempt_no=%d",
+                case.display_id,
+                case.execution_case_id,
+                attempt_no,
+            )
             error = ExecutionError(
                 ExecutionErrorCode.CASE_ERROR,
                 f"{type(exc).__name__}: {exc}",
             )
+            if active_step is not None and not active_step_finished:
+                self._emit_failed_step_finished(
+                    case=case,
+                    attempt_no=attempt_no,
+                    attempt_id=attempt_id,
+                    step=active_step,
+                    started_at=active_step_started,
+                    error=error,
+                )
             if reporter.current_case:
                 reporter.finish_case(f"STATUS: REVIEW\nREASON: {error}")
             result = AttemptResult(CaseOutcome.CASE_ERROR, str(error), error)
@@ -307,6 +406,52 @@ class StructuredPlanRunner:
                 )
             self._emit_attempt_finished(case, attempt_no, attempt_id, result)
             return result
+
+    def _emit_failed_step_finished(
+        self,
+        *,
+        case: ExecutionCase,
+        attempt_no: int,
+        attempt_id,
+        step: ExecutionStep,
+        started_at: float | None,
+        error: ExecutionError,
+    ) -> None:
+        """Close an opened platform Step before its Attempt is terminated."""
+        duration_ms = (
+            max(0, round((time.monotonic() - started_at) * 1000))
+            if started_at is not None
+            else 0
+        )
+        vision_tokens = (
+            max(0, self._agent.run_vision_tokens) if self._agent is not None else 0
+        )
+        outcome = _error_outcome(error).value
+        self.lifecycle_sink.emit(
+            "STEP_FINISHED",
+            {
+                "execution_case_id": str(case.execution_case_id),
+                "case_attempt_id": str(attempt_id) if attempt_id else None,
+                "case_attempt_no": attempt_no,
+                "step_id": str(step.step_id),
+                "outcome": outcome,
+                "message": error.message,
+                "duration_ms": duration_ms,
+                "vision_tokens": vision_tokens,
+                # A failed judge call does not expose reliable usage. Never guess.
+                "judge_tokens": 0,
+            },
+        )
+        logger.info(
+            "Failed step terminal event recorded case=%s attempt_no=%d "
+            "step_index=%d outcome=%s duration_ms=%d vision_tokens=%d",
+            case.display_id,
+            attempt_no,
+            step.index,
+            outcome,
+            duration_ms,
+            vision_tokens,
+        )
 
     def _emit_attempt_finished(
         self,
@@ -355,15 +500,48 @@ class StructuredPlanRunner:
     def _apply_reset(self, plan: ExecutionPlan) -> None:
         reset = plan.target_requirements.reset_policy
         if reset.type == "NONE":
+            logger.warning(
+                "Case app reset skipped because Plan reset_policy=NONE "
+                "app_package=%s",
+                plan.target_requirements.app_package,
+            )
             return
         assert reset.component
-        package = reset.component.split("/", 1)[0]
-        self.adb.run(self.adb_serial, ["shell", "am", "force-stop", package])
-        self.adb.run(self.adb_serial, ["shell", "am", "start", "-n", reset.component])
+        logger.info(
+            "Resetting Android app adb_serial=%s component=%s " "wait_seconds=%d",
+            self.adb_serial,
+            reset.component,
+            reset.wait_seconds,
+        )
+        # Keep the original main.py Case-boundary behavior, while taking the
+        # component from the frozen Plan instead of hard-coding Wearfit.
+        self.adb.run(
+            self.adb_serial,
+            [
+                "shell",
+                "am",
+                "start",
+                "-W",
+                "-a",
+                "android.intent.action.MAIN",
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "-n",
+                reset.component,
+                "-f",
+                "0x10008000",
+            ],
+            timeout=30,
+        )
         deadline = time.monotonic() + reset.wait_seconds
         while time.monotonic() < deadline:
             self.cancellation_token.raise_if_cancelled()
             time.sleep(min(0.25, deadline - time.monotonic()))
+        logger.info(
+            "Android app reset completed adb_serial=%s component=%s",
+            self.adb_serial,
+            reset.component,
+        )
 
     @staticmethod
     def _case_summary(case: ExecutionCase) -> str:

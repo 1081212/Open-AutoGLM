@@ -8,6 +8,7 @@ from phone_agent.worker.heartbeat import (
     ControlHeartbeatLoop,
     RunLeaseLoop,
     WorkerRuntimeState,
+    _parse_time,
 )
 from phone_agent.worker.models import RunHeartbeatResponse, WorkerActivity
 
@@ -56,6 +57,10 @@ def test_control_heartbeat_uses_snapshot_callback_only(tmp_path):
     assert api.control_payload["active_task_count"] == 0
     assert api.control_payload["outbox_pending"] == 3
     assert api.control_payload["runtime_environment"] == "dev"
+    assert api.control_payload["supported_execution_versions"] == [
+        "autoglm.execution.v1",
+        "autoglm.execution.v2",
+    ]
 
 
 def test_run_heartbeat_carries_binding_and_sequences():
@@ -86,3 +91,9 @@ def test_run_heartbeat_carries_binding_and_sequences():
     assert payload["last_sent_producer_seq"] == {"producer": 7}
     assert payload["current_execution_case_id"] == "case"
     assert payload["adhoc_item_state"] is None
+
+
+def test_run_heartbeat_accepts_platform_five_digit_fractional_seconds():
+    parsed = _parse_time("2026-07-23T03:07:50.17854+00:00")
+
+    assert parsed == datetime(2026, 7, 23, 3, 7, 50, 178540, tzinfo=timezone.utc)

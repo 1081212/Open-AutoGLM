@@ -50,17 +50,33 @@ def test_review_does_not_retry_and_next_case_runs(test_run_plan):
 
 def test_device_lost_stops_remaining_cases(test_run_plan):
     error = ExecutionError(ExecutionErrorCode.DEVICE_LOST, "device disconnected")
+    sink = RecordingSink()
 
     def runner(case, attempt_no):
         del attempt_no
         return AttemptResult(CaseOutcome.DEVICE_LOST, "lost", error=error)
 
-    result = TaskExecutor(attempt_runner=runner).execute(test_run_plan)
+    result = TaskExecutor(
+        attempt_runner=runner,
+        lifecycle_sink=sink,
+        bind_test_run_boundaries=True,
+    ).execute(test_run_plan)
 
     assert result.outcome is TaskOutcome.DEVICE_LOST
     assert len(result.cases) == 1
     assert result.not_run_execution_case_ids == (
         test_run_plan.test_run.cases[1].execution_case_id,
+    )
+    assert [event_type for event_type, _ in sink.events[-3:]] == [
+        "CASE_FINISHED",
+        "RUN_ERROR",
+        "RUN_FINISHED",
+    ]
+    run_error = sink.events[-2][1]
+    assert run_error["error_code"] == "DEVICE_LOST"
+    assert run_error["message"] == "device disconnected"
+    assert run_error["execution_case_id"] == str(
+        test_run_plan.test_run.cases[0].execution_case_id
     )
 
 
@@ -109,6 +125,7 @@ def test_checkpoint_failure_stops_before_next_case(test_run_plan):
     assert executed == [(1, 1)]
     assert result.outcome is TaskOutcome.INFRA_ERROR
     assert len(result.cases) == 1
+    assert result.cases[0].outcome is CaseOutcome.INFRA_ERROR
     assert result.not_run_execution_case_ids == (
         test_run_plan.test_run.cases[1].execution_case_id,
     )

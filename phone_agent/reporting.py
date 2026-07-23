@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import html
 import json
+import logging
 import os
 import re
 import subprocess
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+logger = logging.getLogger(__name__)
 
 FAIL_KEYWORDS = (
     "bug",
@@ -201,7 +203,9 @@ class TestRunReporter:
         self.device_id = device_id
         self.model_name = model_name
         self.base_url = base_url
-        self.wda_url = wda_url or os.getenv("PHONE_AGENT_WDA_URL", "http://localhost:8100")
+        self.wda_url = wda_url or os.getenv(
+            "PHONE_AGENT_WDA_URL", "http://localhost:8100"
+        )
         self.cases: list[CaseReport] = []
         self.current_case: CaseReport | None = None
         self.current_attempt: CaseAttemptReport | None = None
@@ -346,7 +350,9 @@ class TestRunReporter:
         self._case_step_counter += 1
         artifact_step = self._case_step_counter
         attempt_rel = attempt_dir.relative_to(case_dir)
-        screenshot_rel = str(attempt_rel / "screenshots" / f"step_{artifact_step:03d}.png")
+        screenshot_rel = str(
+            attempt_rel / "screenshots" / f"step_{artifact_step:03d}.png"
+        )
         screenshot_path = attempt_dir / "screenshots" / f"step_{artifact_step:03d}.png"
         try:
             screenshot_path.write_bytes(base64.b64decode(screenshot_base64))
@@ -448,10 +454,14 @@ class TestRunReporter:
 
         selected_attempt = self.current_attempt
         if case.attempts:
-            pass_attempts = [attempt for attempt in case.attempts if attempt.status == "PASS"]
+            pass_attempts = [
+                attempt for attempt in case.attempts if attempt.status == "PASS"
+            ]
             selected_attempt = pass_attempts[-1] if pass_attempts else case.attempts[-1]
 
-        case.result_message = selected_attempt.result_message if selected_attempt else result_message
+        case.result_message = (
+            selected_attempt.result_message if selected_attempt else result_message
+        )
         case.finished_at = finished_at
         case.status = selected_attempt.status if selected_attempt else attempt_status
         if selected_attempt:
@@ -459,10 +469,16 @@ class TestRunReporter:
             case.steps = selected_attempt.steps
             case.issues = selected_attempt.issues
         self._write_case_json(case)
-        self._write_case_markdown(case)
-        self._write_case_html(case)
-        self._write_summary()
-        self._write_summary_html()
+        self._best_effort_compatibility_write(
+            "case Markdown", lambda: self._write_case_markdown(case)
+        )
+        self._best_effort_compatibility_write(
+            "case HTML", lambda: self._write_case_html(case)
+        )
+        self._best_effort_compatibility_write("run summary", self._write_summary)
+        self._best_effort_compatibility_write(
+            "run summary HTML", self._write_summary_html
+        )
         self.current_case = None
         self.current_attempt = None
         return case.status
@@ -473,9 +489,20 @@ class TestRunReporter:
                 keep=True,
                 attempt=self.current_attempt,
             )
-        self._write_run_metadata()
-        self._write_summary()
-        self._write_summary_html()
+        self._best_effort_compatibility_write("run metadata", self._write_run_metadata)
+        self._best_effort_compatibility_write("run summary", self._write_summary)
+        self._best_effort_compatibility_write(
+            "run summary HTML", self._write_summary_html
+        )
+
+    @staticmethod
+    def _best_effort_compatibility_write(label: str, writer) -> None:
+        try:
+            writer()
+        except Exception:
+            # Structured Events, Attempt completion and Case checkpoint are
+            # authoritative. Legacy local Markdown/HTML must never abort them.
+            logger.exception("Local compatibility report write failed output=%s", label)
 
     def _classify_status(
         self, case: CaseReport, result_message: str, max_steps_reached: bool
@@ -508,7 +535,9 @@ class TestRunReporter:
             if last_status in {"UNKNOWN", "STEP_LIMIT", "REVIEW"}:
                 return "REVIEW"
 
-        if any(status in {"UNKNOWN", "STEP_LIMIT", "REVIEW"} for status in step_statuses):
+        if any(
+            status in {"UNKNOWN", "STEP_LIMIT", "REVIEW"} for status in step_statuses
+        ):
             return "REVIEW"
         explicit = _parse_explicit_status(result_message or "")
         if explicit in {"FAIL", "BLOCKED", "REVIEW"}:
@@ -534,7 +563,9 @@ class TestRunReporter:
                     "android_version": self._run_device_shell(
                         "getprop ro.build.version.release"
                     ),
-                    "sdk_version": self._run_device_shell("getprop ro.build.version.sdk"),
+                    "sdk_version": self._run_device_shell(
+                        "getprop ro.build.version.sdk"
+                    ),
                 }
             )
         return env
@@ -891,12 +922,16 @@ class TestRunReporter:
             ]
         )
         lines.extend(["", "## Cases", ""])
-        lines.append("| Case | Status | Attempts | Vision Tokens | Judge Tokens | Report | Last Screenshot |")
+        lines.append(
+            "| Case | Status | Attempts | Vision Tokens | Judge Tokens | Report | Last Screenshot |"
+        )
         lines.append("| --- | --- | ---: | ---: | ---: | --- | --- |")
         for case in self.cases:
             last = case.steps[-1] if case.steps else None
             case_dir_name = _case_dir_name(case)
-            screenshot = f"{case_dir_name}/{last.screenshot}" if last and last.screenshot else ""
+            screenshot = (
+                f"{case_dir_name}/{last.screenshot}" if last and last.screenshot else ""
+            )
             case_usage = _judge_usage_for_case(case)
             case_vision_usage = _vision_usage_for_case(case)
             lines.append(
@@ -984,7 +1019,7 @@ class TestRunReporter:
                 lines.append(
                     f'<button class="attempt-tab{active_class}" type="button" '
                     f'data-attempt-tab="{attempt.attempt}">'
-                    f'Attempt {attempt.attempt} · {_h(attempt.status)}</button>'
+                    f"Attempt {attempt.attempt} · {_h(attempt.status)}</button>"
                 )
             lines.append("</div>")
         for attempt in attempts:
@@ -1058,7 +1093,7 @@ def _extract_ui_texts(xml: str) -> list[str]:
 def _extract_ui_texts_fallback(xml: str) -> list[str]:
     values: list[str] = []
     for attr in ("text", "content-desc", "name", "label", "value"):
-        for value in re.findall(fr'{attr}="([^"]+)"', xml):
+        for value in re.findall(rf'{attr}="([^"]+)"', xml):
             value = value.strip()
             if value and value not in values:
                 values.append(value)
@@ -1242,8 +1277,12 @@ def _build_summary_html(
         _summary_tile("Blocked", str(blocked_count), "环境或流程阻塞", "blocked"),
         _summary_tile("Other", str(other_count), "未完成/未知", "other"),
         _summary_tile("Duration", duration, "首尾用例时间跨度", "duration"),
-        _summary_tile("Vision Tokens", str(vision_usage["total"]), "视觉执行模型总消耗", "other"),
-        _summary_tile("Judge Tokens", str(judge_usage["total"]), "文本判定模型总消耗", "other"),
+        _summary_tile(
+            "Vision Tokens", str(vision_usage["total"]), "视觉执行模型总消耗", "other"
+        ),
+        _summary_tile(
+            "Judge Tokens", str(judge_usage["total"]), "文本判定模型总消耗", "other"
+        ),
         "</section>",
         _module_statistics_html(cases),
         _token_cost_panel(vision_usage, judge_usage),
@@ -1261,7 +1300,11 @@ def _build_summary_html(
         meta = metadata[case.execution_case_id]
         report_link = f"{_case_dir_name(case)}/report.html"
         issue_step = _find_issue_step(case)
-        reason = _issue_reason(case, issue_step) if case.status != "PASS" else case.result_message or "Passed"
+        reason = (
+            _issue_reason(case, issue_step)
+            if case.status != "PASS"
+            else case.result_message or "Passed"
+        )
         case_usage = _judge_usage_for_case(case)
         case_vision_usage = _vision_usage_for_case(case)
         test_types = meta.get("test_types") or []
@@ -1293,9 +1336,9 @@ def _build_summary_html(
         [
             "</div>",
             "</section>",
-        '<section id="defects" class="panel">',
-        '<div class="section-head"><div><h2>非 PASS 用例</h2><p class="subtle">优先查看失败截图、失败步骤和模型/动作输出原因。</p></div>',
-        f'<span class="count-pill">{len(non_pass_cases)} items</span></div>',
+            '<section id="defects" class="panel">',
+            '<div class="section-head"><div><h2>非 PASS 用例</h2><p class="subtle">优先查看失败截图、失败步骤和模型/动作输出原因。</p></div>',
+            f'<span class="count-pill">{len(non_pass_cases)} items</span></div>',
         ]
     )
 
@@ -1305,7 +1348,9 @@ def _build_summary_html(
             lines.append(_render_issue_case_html(case))
         lines.append("</div>")
     else:
-        lines.append('<div class="empty-state"><strong>暂无失败或阻塞用例</strong><span>本轮所有用例均为 PASS。</span></div>')
+        lines.append(
+            '<div class="empty-state"><strong>暂无失败或阻塞用例</strong><span>本轮所有用例均为 PASS。</span></div>'
+        )
     lines.append("</section>")
 
     lines.extend(
@@ -1354,11 +1399,7 @@ def _case_filter_html(cases: list[CaseReport]) -> str:
         {str(item["rule_type"]) for item in metadata if item.get("rule_type")}
     )
     test_types = sorted(
-        {
-            str(label)
-            for item in metadata
-            for label in (item.get("test_types") or [])
-        }
+        {str(label) for item in metadata for label in (item.get("test_types") or [])}
     )
     return "\n".join(
         [
@@ -1377,7 +1418,9 @@ def _case_filter_html(cases: list[CaseReport]) -> str:
 
 def _filter_select(element_id: str, label: str, values: list[str]) -> str:
     options = ['<option value="">全部</option>']
-    options.extend(f'<option value="{_h(value)}">{_h(value)}</option>' for value in values)
+    options.extend(
+        f'<option value="{_h(value)}">{_h(value)}</option>' for value in values
+    )
     return (
         f'<label class="filter-field"><span>{_h(label)}</span>'
         f'<select id="{_h(element_id)}">{"".join(options)}</select></label>'
@@ -1420,7 +1463,7 @@ def _module_statistics_html(cases: list[CaseReport]) -> str:
             '<section id="module-stats" class="panel module-stats">',
             '<div class="section-head"><div><h2>模块统计</h2><p class="subtle">按关联模块汇总执行结论及标签分布。</p></div></div>',
             '<div class="stats-table-wrap"><table class="stats-table">',
-            '<thead><tr><th>模块</th><th>总数</th><th>PASS</th><th>FAIL</th><th>BLOCKED</th><th>其他</th><th>通过率</th><th>优先级</th><th>规则类型</th><th>测试类型</th></tr></thead>',
+            "<thead><tr><th>模块</th><th>总数</th><th>PASS</th><th>FAIL</th><th>BLOCKED</th><th>其他</th><th>通过率</th><th>优先级</th><th>规则类型</th><th>测试类型</th></tr></thead>",
             f"<tbody>{body}</tbody></table></div></section>",
         ]
     )
@@ -1474,17 +1517,17 @@ def _token_cost_panel(
             f'data-prompt="{usage["prompt"]}" '
             f'data-completion="{usage["completion"]}" '
             f'data-total="{usage["total"]}">'
-            f'<td><strong>{_h(name)}</strong><span>{_h(note)}</span></td>'
+            f"<td><strong>{_h(name)}</strong><span>{_h(note)}</span></td>"
             f'<td>{usage["prompt"]:,}</td>'
             f'<td>{usage["completion"]:,}</td>'
-            f'<td>{cached:,}</td>'
+            f"<td>{cached:,}</td>"
             f'<td><strong>{usage["total"]:,}</strong></td>'
-            '<td>'
+            "<td>"
             f'<input class="price-input token-input-price" type="number" min="0" step="0.01" value="{input_price:g}" aria-label="{_h(name)} 输入单价">'
-            '</td>'
-            '<td>'
+            "</td>"
+            "<td>"
             f'<input class="price-input token-output-price" type="number" min="0" step="0.01" value="{output_price:g}" aria-label="{_h(name)} 输出单价">'
-            '</td>'
+            "</td>"
             f'<td><strong class="token-cost" data-cost-index="{index}">¥0.0000</strong></td>'
             "</tr>"
         )
@@ -1518,7 +1561,9 @@ def _token_cost_panel(
     )
 
 
-def _status_bar(pass_count: int, fail_count: int, blocked_count: int, other_count: int) -> str:
+def _status_bar(
+    pass_count: int, fail_count: int, blocked_count: int, other_count: int
+) -> str:
     total = pass_count + fail_count + blocked_count + other_count
     parts = [
         ("pass", pass_count, "PASS"),
@@ -1531,7 +1576,9 @@ def _status_bar(pass_count: int, fail_count: int, blocked_count: int, other_coun
     for tone, count, label in parts:
         width = (count / total * 100) if total else 0
         if count:
-            segments.append(f'<span class="bar-{tone}" style="width:{width:.2f}%"></span>')
+            segments.append(
+                f'<span class="bar-{tone}" style="width:{width:.2f}%"></span>'
+            )
         legend.append(f'<span><i class="legend-{tone}"></i>{label} {count}</span>')
     return (
         '<div class="status-overview">'
@@ -1544,10 +1591,14 @@ def _status_bar(pass_count: int, fail_count: int, blocked_count: int, other_coun
 def _render_step_html(case: CaseReport, step: StepArtifact) -> str:
     screenshot = f"{step.screenshot}" if step.screenshot else ""
     actions = step.actions or []
-    action_payload: Any = [asdict(item) for item in actions] if actions else (step.action or {})
+    action_payload: Any = (
+        [asdict(item) for item in actions] if actions else (step.action or {})
+    )
     action = json.dumps(action_payload, ensure_ascii=False, indent=2)
     ui_texts = "、".join(step.ui_texts[:30])
-    screenshot_html = _screenshot_frame(screenshot, step.action, f"step {step.step} screenshot")
+    screenshot_html = _screenshot_frame(
+        screenshot, step.action, f"step {step.step} screenshot"
+    )
     return "\n".join(
         [
             '<article class="step-card">',
@@ -1576,14 +1627,18 @@ def _render_attempt_html(
     if attempt.test_steps:
         for test_step in attempt.test_steps:
             model_steps = [
-                step for step in attempt.steps if step.test_step_index == test_step.index
+                step
+                for step in attempt.steps
+                if step.test_step_index == test_step.index
             ]
             model_html.append(_render_test_step_html(case, test_step, model_steps))
     elif attempt.steps:
         for step in attempt.steps:
             model_html.append(_render_step_html(case, step))
     else:
-        model_html.append('<div class="empty-state"><strong>无模型动作记录</strong></div>')
+        model_html.append(
+            '<div class="empty-state"><strong>无模型动作记录</strong></div>'
+        )
 
     vision_total = sum(step.vision_total_tokens for step in attempt.steps)
     judge_total = sum(step.judge_total_tokens for step in attempt.test_steps)
@@ -1609,11 +1664,13 @@ def _render_logcat_html(case: CaseReport, attempt: CaseAttemptReport) -> str:
     if not attempt.logcat and not attempt.logcat_error:
         return ""
     parts = ['<section class="logcat-panel">', '<div class="section-head">']
-    parts.append('<div><h3>Android Logcat</h3><p class="subtle">仅非 PASS Attempt 保留。</p></div>')
+    parts.append(
+        '<div><h3>Android Logcat</h3><p class="subtle">仅非 PASS Attempt 保留。</p></div>'
+    )
     if attempt.logcat:
         parts.append(
             f'<a class="logcat-link" href="{_h(attempt.logcat)}">查看完整日志 · '
-            f'{_h(_format_bytes(attempt.logcat_size))}</a>'
+            f"{_h(_format_bytes(attempt.logcat_size))}</a>"
         )
     parts.append("</div>")
     if attempt.logcat_error:
@@ -1622,7 +1679,7 @@ def _render_logcat_html(case: CaseReport, attempt: CaseAttemptReport) -> str:
         log_path = Path(case.artifacts_dir) / attempt.logcat
         preview = _read_log_tail(log_path)
         if preview:
-            parts.append('<details><summary>查看日志末尾（最多 400 行）</summary>')
+            parts.append("<details><summary>查看日志末尾（最多 400 行）</summary>")
             parts.append(f'<pre class="logcat-preview">{_h(preview)}</pre></details>')
     parts.append("</section>")
     return "\n".join(parts)
@@ -1666,13 +1723,15 @@ def _render_test_step_html(
         for step in model_steps:
             model_html.append(_render_step_html(case, step))
     else:
-        model_html.append('<div class="empty-state"><strong>无模型动作记录</strong></div>')
+        model_html.append(
+            '<div class="empty-state"><strong>无模型动作记录</strong></div>'
+        )
 
     return "\n".join(
         [
             '<article class="test-step-card">',
             '<div class="test-step-head">',
-            '<div>',
+            "<div>",
             f"<h3>测试步骤 {test_step.index}</h3>",
             f"<p>{_h(test_step.text)}</p>",
             "</div>",
@@ -1708,7 +1767,7 @@ def _render_issue_case_html(case: CaseReport) -> str:
         f"{case.case_id} issue screenshot",
     )
     step_label = f"Step {issue_step.step:03d}" if issue_step else "无步骤"
-    action = issue_step.action if issue_step else {}
+    action = (issue_step.action if issue_step else None) or {}
     action_name = action.get("action") or action.get("_metadata") or "unknown"
     return "\n".join(
         [
@@ -1740,7 +1799,9 @@ def _render_issue_case_html(case: CaseReport) -> str:
 
 def _find_issue_step(case: CaseReport) -> StepArtifact | None:
     for step in case.steps:
-        if step.action_success is False or any(action.success is False for action in step.actions):
+        if step.action_success is False or any(
+            action.success is False for action in step.actions
+        ):
             return step
     issue_test_step = _find_issue_test_step(case)
     if issue_test_step:
@@ -1958,7 +2019,9 @@ def _render_markdown(markdown: str) -> str:
         stripped = line.strip()
         if stripped.startswith("```"):
             if in_code:
-                html_lines.append(f"<pre><code>{_h(chr(10).join(code_lines))}</code></pre>")
+                html_lines.append(
+                    f"<pre><code>{_h(chr(10).join(code_lines))}</code></pre>"
+                )
                 code_lines = []
                 in_code = False
             else:

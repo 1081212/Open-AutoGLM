@@ -43,6 +43,7 @@ class ExecutionErrorCode(str, Enum):
     CASE_ERROR = "CASE_ERROR"
     ARTIFACT_ENCRYPT_FAILED = "ARTIFACT_ENCRYPT_FAILED"
     ARTIFACT_UPLOAD_FAILED = "ARTIFACT_UPLOAD_FAILED"
+    PRE_TEST_INSTALL_FAILED = "PRE_TEST_INSTALL_FAILED"
     OUTBOX_FULL = "OUTBOX_FULL"
     CANCELLED = "CANCELLED"
     TASK_TIMEOUT = "TASK_TIMEOUT"
@@ -66,6 +67,7 @@ _CATEGORY_BY_CODE = {
     ExecutionErrorCode.ACTION_ERROR: ErrorCategory.ACTION,
     ExecutionErrorCode.ARTIFACT_ENCRYPT_FAILED: ErrorCategory.ARTIFACT,
     ExecutionErrorCode.ARTIFACT_UPLOAD_FAILED: ErrorCategory.ARTIFACT,
+    ExecutionErrorCode.PRE_TEST_INSTALL_FAILED: ErrorCategory.EXECUTION,
     ExecutionErrorCode.OUTBOX_FULL: ErrorCategory.OUTBOX,
     ExecutionErrorCode.CANCELLED: ErrorCategory.CANCELLATION,
     ExecutionErrorCode.TASK_TIMEOUT: ErrorCategory.EXECUTION,

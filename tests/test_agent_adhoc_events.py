@@ -89,6 +89,21 @@ def test_adhoc_agent_emits_stable_action_ids_and_contiguous_model_steps(monkeypa
     assert len(actions) == 2
     assert len({UUID(action["action_id"]) for action in actions}) == 2
     assert all(action["execution_item_id"] == item_id for action in actions)
+    required_action_fields = {
+        "action_id",
+        "agent_step",
+        "action",
+        "success",
+        "message",
+        "vision_prompt_tokens",
+        "vision_completion_tokens",
+        "vision_cached_tokens",
+        "vision_total_tokens",
+        "model_ttft_ms",
+        "model_total_ms",
+    }
+    assert all(required_action_fields <= action.keys() for action in actions)
+    assert all("thinking" not in action for action in actions)
     assert [step["step_sequence"] for step in steps] == [1, 2]
     assert [step["vision_tokens"] for step in steps] == [11, 17]
     assert all(step["judge_tokens"] == 0 for step in steps)

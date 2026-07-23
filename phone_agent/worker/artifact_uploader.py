@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
@@ -15,6 +16,8 @@ from phone_agent.execution.errors import ExecutionError, ExecutionErrorCode
 from phone_agent.worker.encryption import ArtifactAadV1, encrypt_artifact_file
 from phone_agent.worker.outbox import DurableOutbox, LocalSealer, OutboxItem
 from phone_agent.worker.config import RuntimeEnvironment, parse_runtime_environment
+
+logger = logging.getLogger(__name__)
 
 
 class ArtifactInitiateResponse(BaseModel):
@@ -85,8 +88,18 @@ class ArtifactPreparer:
         initiate_idempotency_key: str,
         lease_token: str,
         fencing_token: int,
+        defer_upload_until_checkpoint: bool = False,
     ) -> UUID:
         plaintext_size, plaintext_sha256 = _file_identity(source.path)
+        logger.info(
+            "Preparing Artifact task_run_id=%s artifact_type=%s "
+            "plaintext_size=%d execution_case_id=%s case_attempt_no=%s",
+            source.task_run_id,
+            source.artifact_type,
+            plaintext_size,
+            source.execution_case_id,
+            source.case_attempt_no,
+        )
         response = ArtifactInitiateResponse.model_validate(
             self.api.initiate_artifact(
                 str(source.task_run_id),
@@ -101,12 +114,14 @@ class ArtifactPreparer:
                     "content_type": source.content_type,
                     "plaintext_size": plaintext_size,
                     "plaintext_sha256": plaintext_sha256,
-                    "execution_case_id": str(source.execution_case_id)
-                    if source.execution_case_id
-                    else None,
-                    "case_attempt_id": str(source.case_attempt_id)
-                    if source.case_attempt_id
-                    else None,
+                    "execution_case_id": (
+                        str(source.execution_case_id)
+                        if source.execution_case_id
+                        else None
+                    ),
+                    "case_attempt_id": (
+                        str(source.case_attempt_id) if source.case_attempt_id else None
+                    ),
                     "case_attempt_no": source.case_attempt_no,
                     "step_id": str(source.step_id) if source.step_id else None,
                     "sensitive": source.sensitive,
@@ -207,6 +222,20 @@ class ArtifactPreparer:
             artifact_upload_credential_ref=token_ref,
             fencing_token=fencing_token,
             local_path=str(encrypted.path),
+            # A Case checkpoint records the platform's current upload_state.
+            # Keep Case-bound artifacts PENDING until that checkpoint is
+            # accepted, otherwise the background pump can race it to VERIFIED.
+            # The timeout is only a crash-safety fallback; the coordinator
+            # explicitly releases these items immediately after checkpoint.
+            defer_seconds=3600 if defer_upload_until_checkpoint else 0,
+        )
+        logger.info(
+            "Artifact encrypted and queued task_run_id=%s artifact_id=%s "
+            "artifact_type=%s ciphertext_size=%d",
+            source.task_run_id,
+            response.artifact_id,
+            source.artifact_type,
+            encrypted.ciphertext_size,
         )
         return response.artifact_id
 
@@ -226,6 +255,12 @@ class ArtifactOutboxPump:
         try:
             self._upload_and_complete(item)
             self.outbox.acknowledge(item.id)
+            self._delete_acknowledged_ciphertext(item)
+            logger.info(
+                "Artifact upload completed task_run_id=%s artifact_id=%s",
+                item.task_run_id,
+                item.payload.get("artifact_id"),
+            )
             return True
         except Exception as error:
             if getattr(error, "retryable", False) or isinstance(
@@ -234,7 +269,42 @@ class ArtifactOutboxPump:
                 self.outbox.retry(item.id, str(error))
             else:
                 self.outbox.mark_failed(item.id, str(error))
+            logger.warning(
+                "Artifact upload failed task_run_id=%s artifact_id=%s "
+                "error_type=%s retryable=%s",
+                item.task_run_id,
+                item.payload.get("artifact_id"),
+                type(error).__name__,
+                bool(getattr(error, "retryable", False)),
+            )
             return False
+
+    @staticmethod
+    def _delete_acknowledged_ciphertext(item: OutboxItem) -> None:
+        """Best-effort removal after both COS upload and platform ACK succeed."""
+        if not item.local_path:
+            return
+        path = Path(item.local_path)
+        try:
+            if path.is_symlink() or path.suffix != ".enc":
+                logger.warning(
+                    "Refusing to delete unexpected Artifact ciphertext path "
+                    "task_run_id=%s artifact_id=%s",
+                    item.task_run_id,
+                    item.payload.get("artifact_id"),
+                )
+                return
+            path.unlink(missing_ok=True)
+        except OSError as error:
+            # The platform ACK is authoritative; a local cleanup failure must
+            # never cause a duplicate upload or reverse the durable ACK.
+            logger.warning(
+                "Artifact ciphertext cleanup failed task_run_id=%s artifact_id=%s "
+                "error_type=%s",
+                item.task_run_id,
+                item.payload.get("artifact_id"),
+                type(error).__name__,
+            )
 
     def _upload_and_complete(self, item: OutboxItem) -> None:
         if not item.local_path or not item.artifact_upload_credential_ref:

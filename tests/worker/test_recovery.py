@@ -120,7 +120,10 @@ def test_startup_heartbeat_reports_one_run_summary_without_bearer_secret(tmp_pat
     assert payload["max_concurrency"] == 1
     assert payload["active_task_count"] == 0
     assert payload["current_task_run_id"] is None
-    assert payload["supported_execution_versions"] == ["autoglm.execution.v1"]
+    assert payload["supported_execution_versions"] == [
+        "autoglm.execution.v1",
+        "autoglm.execution.v2",
+    ]
     assert payload["devices"] == []
     assert payload["outbox_pending"] == 0
     assert payload["spool_free_bytes"] > 0
@@ -144,6 +147,31 @@ def test_startup_termination_never_resumes_and_completes_worker_lost(tmp_path):
     assert complete["lease_token"] == f"lease-secret:{task_run_id}"
     assert complete["error"]["code"] == "WORKER_RESTARTED"
     assert "lease-secret" not in str(api.heartbeat_payloads)
+
+
+def test_restart_never_downloads_or_reinstalls_v2_apk(tmp_path, monkeypatch):
+    outbox, sealer, task_run_id, _claim = setup_active_run(tmp_path)
+    run_root = tmp_path / "task-runs" / task_run_id
+    run_root.mkdir(parents=True, exist_ok=True)
+    (run_root / "plan.json").write_text(
+        '{"schema_version":"autoglm.execution.v2","pre_test_install":{}}',
+        encoding="utf-8",
+    )
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError(
+            "startup recovery must not resume CI download or ADB install"
+        )
+
+    monkeypatch.setattr(
+        "phone_agent.gitlab_install.download_frozen_job_artifact", forbidden
+    )
+    monkeypatch.setattr("phone_agent.gitlab_install.install_apk_with_adb", forbidden)
+    api = FakeApi([decision(task_run_id, startup_termination_allowed=True)])
+
+    make_recovery(tmp_path, api, outbox, sealer).recover()
+
+    assert api.completed[0][1]["outcome"] == "WORKER_LOST"
 
 
 @pytest.mark.parametrize(

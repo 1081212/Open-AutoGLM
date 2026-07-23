@@ -9,7 +9,6 @@ from typing import Literal, cast
 from urllib.parse import urlparse
 from uuid import UUID
 
-
 RuntimeEnvironment = Literal["dev", "prod"]
 
 
@@ -32,6 +31,19 @@ class WorkerConfig:
     platform_reporter_enabled: bool = True
     encrypted_cos_enabled: bool = True
     legacy_local_report_enabled: bool = True
+    gitlab_base_url: str | None = None
+    gitlab_token: str | None = None
+    gitlab_verify_ssl: bool = True
+    gitlab_use_env_proxy: bool = False
+    gitlab_download_timeout_seconds: int = 300
+    gitlab_max_artifact_bytes: int = 2 * 1024 * 1024 * 1024
+    gitlab_max_apk_bytes: int = 1024 * 1024 * 1024
+    gitlab_min_free_bytes: int = 512 * 1024 * 1024
+    android_apk_metadata_tool: str | None = None
+    spool_retention_days: int = 7
+    spool_max_bytes: int = 20 * 1024 * 1024 * 1024
+    spool_min_free_bytes: int = 10 * 1024 * 1024 * 1024
+    spool_gc_interval_seconds: int = 3600
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -56,6 +68,10 @@ class WorkerConfig:
             if allowlist_raw
             else None
         )
+        gitlab_base_url = os.getenv("AUTOGLM_GITLAB_BASE_URL", "").strip()
+        if gitlab_base_url:
+            gitlab_base_url = _https_url("AUTOGLM_GITLAB_BASE_URL", gitlab_base_url)
+        gitlab_token = os.getenv("AUTOGLM_GITLAB_TOKEN", "").strip() or None
         return cls(
             worker_id=_required_uuid("AUTOGLM_WORKER_ID"),
             runtime_environment=runtime_environment,
@@ -80,6 +96,37 @@ class WorkerConfig:
             legacy_local_report_enabled=_flag(
                 "AUTOGLM_LEGACY_LOCAL_REPORT_ENABLED", True
             ),
+            gitlab_base_url=gitlab_base_url or None,
+            gitlab_token=gitlab_token,
+            gitlab_verify_ssl=_flag("AUTOGLM_GITLAB_VERIFY_SSL", True),
+            gitlab_use_env_proxy=_flag("AUTOGLM_GITLAB_USE_ENV_PROXY", False),
+            gitlab_download_timeout_seconds=_positive_int(
+                "AUTOGLM_GITLAB_DOWNLOAD_TIMEOUT_SECONDS", 300
+            ),
+            gitlab_max_artifact_bytes=_positive_int(
+                "AUTOGLM_GITLAB_MAX_ARTIFACT_BYTES", 2 * 1024 * 1024 * 1024
+            ),
+            gitlab_max_apk_bytes=_positive_int(
+                "AUTOGLM_GITLAB_MAX_APK_BYTES", 1024 * 1024 * 1024
+            ),
+            gitlab_min_free_bytes=_positive_int(
+                "AUTOGLM_GITLAB_MIN_FREE_BYTES", 512 * 1024 * 1024
+            ),
+            android_apk_metadata_tool=(
+                os.getenv("AUTOGLM_ANDROID_APK_METADATA_TOOL", "").strip() or None
+            ),
+            spool_retention_days=_positive_int(
+                "AUTOGLM_WORKER_SPOOL_RETENTION_DAYS", 7
+            ),
+            spool_max_bytes=_positive_int(
+                "AUTOGLM_WORKER_SPOOL_MAX_BYTES", 20 * 1024 * 1024 * 1024
+            ),
+            spool_min_free_bytes=_positive_int(
+                "AUTOGLM_WORKER_SPOOL_MIN_FREE_BYTES", 10 * 1024 * 1024 * 1024
+            ),
+            spool_gc_interval_seconds=_positive_int(
+                "AUTOGLM_WORKER_SPOOL_GC_INTERVAL_SECONDS", 3600
+            ),
         )
 
 
@@ -98,6 +145,15 @@ def _required_uuid(name: str) -> UUID:
         return UUID(value)
     except ValueError as exc:
         raise ValueError(f"{name} must be a UUID") from exc
+
+
+def _https_url(name: str, value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError(f"{name} must be an absolute https:// URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError(f"{name} must not contain credentials, query, or fragment")
+    return value.rstrip("/")
 
 
 def _redis_url(name: str) -> str:

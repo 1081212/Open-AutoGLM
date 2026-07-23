@@ -6,28 +6,47 @@ import os
 import re
 import shutil
 import ssl
+import stat
 import subprocess
 import tempfile
 import time
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Any
-from urllib.parse import unquote, urlencode
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable
+from urllib.parse import quote, unquote, urlencode
 
 import requests
 from requests.adapters import HTTPAdapter
-
 
 DEFAULT_GITLAB = "https://gitlab-office.4pd.io"
 DEFAULT_PROJECT = "android%2FWearfitPro"
 TERMINAL_SUCCESS = "success"
 TERMINAL_FAILURES = {"failed", "canceled", "skipped", "manual"}
+MAX_ZIP_ENTRIES = 10_000
+MAX_ZIP_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
+MAX_ZIP_ENTRY_BYTES = 1024 * 1024 * 1024
+MAX_ZIP_COMPRESSION_RATIO = 200
 
 
 class GitLabInstallError(RuntimeError):
     """Raised when build, artifact download, or APK installation fails."""
+
+
+class FrozenArtifactError(GitLabInstallError):
+    """Sanitized failure while consuming one platform-frozen artifact job."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        candidate_recoverable: bool = False,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.candidate_recoverable = candidate_recoverable
+        self.retryable = retryable
 
 
 class TLSHttpAdapter(HTTPAdapter):
@@ -39,7 +58,11 @@ class TLSHttpAdapter(HTTPAdapter):
         super().__init__(*args, **kwargs)
 
     def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
-        context = ssl.create_default_context() if self.verify_ssl else ssl._create_unverified_context()
+        context = (
+            ssl.create_default_context()
+            if self.verify_ssl
+            else ssl._create_unverified_context()
+        )
         if self.tls_version == "1.2":
             context.minimum_version = ssl.TLSVersion.TLSv1_2
             context.maximum_version = ssl.TLSVersion.TLSv1_2
@@ -47,7 +70,9 @@ class TLSHttpAdapter(HTTPAdapter):
             context.minimum_version = ssl.TLSVersion.TLSv1_3
             context.maximum_version = ssl.TLSVersion.TLSv1_3
         pool_kwargs["ssl_context"] = context
-        return super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
+        return super().init_poolmanager(
+            connections, maxsize, block=block, **pool_kwargs
+        )
 
 
 @dataclass
@@ -117,7 +142,9 @@ def request_json(
 
     if response.status_code >= 400:
         detail = response.text.strip()
-        raise GitLabInstallError(f"GitLab API 返回 HTTP {response.status_code}：{detail}")
+        raise GitLabInstallError(
+            f"GitLab API 返回 HTTP {response.status_code}：{detail}"
+        )
 
     try:
         return response.json()
@@ -142,7 +169,9 @@ def trigger_pipeline(config: GitLabInstallConfig) -> int:
         use_env_proxy=config.use_env_proxy,
     )
     if not isinstance(data, dict) or not isinstance(data.get("id"), int):
-        raise GitLabInstallError(f"Pipeline response did not contain numeric id: {data}")
+        raise GitLabInstallError(
+            f"Pipeline response did not contain numeric id: {data}"
+        )
     return data["id"]
 
 
@@ -157,11 +186,15 @@ def get_pipeline_status(config: GitLabInstallConfig, pipeline_id: int) -> str:
         use_env_proxy=config.use_env_proxy,
     )
     if not isinstance(data, dict) or not isinstance(data.get("status"), str):
-        raise GitLabInstallError(f"Pipeline status response did not contain status: {data}")
+        raise GitLabInstallError(
+            f"Pipeline status response did not contain status: {data}"
+        )
     return data["status"]
 
 
-def get_pipeline_jobs(config: GitLabInstallConfig, pipeline_id: int) -> list[dict[str, Any]]:
+def get_pipeline_jobs(
+    config: GitLabInstallConfig, pipeline_id: int
+) -> list[dict[str, Any]]:
     query = urlencode({"per_page": "100"})
     url = (
         f"{config.gitlab.rstrip('/')}/api/v4/projects/{config.project}/"
@@ -243,32 +276,252 @@ def find_apk_files(root: Path) -> list[Path]:
     return sorted(path for path in root.rglob("*.apk") if path.is_file())
 
 
-def extract_single_apk(zip_path: Path, output_dir: Path, filename: str | None = None) -> Path:
-    with tempfile.TemporaryDirectory(prefix="gitlab_artifacts_extract_") as temp_dir:
-        extract_root = Path(temp_dir)
-        try:
-            with zipfile.ZipFile(zip_path) as archive:
-                archive.extractall(extract_root)
-        except zipfile.BadZipFile as exc:
-            raise GitLabInstallError(f"artifacts 不是合法 zip 文件：{zip_path}") from exc
+def download_frozen_job_artifact(
+    *,
+    session: requests.Session,
+    gitlab_base_url: str,
+    project_path: str,
+    job_id: int,
+    token: str,
+    output_dir: Path,
+    declared_size: int,
+    max_artifact_bytes: int,
+    min_free_bytes: int,
+    timeout_seconds: int,
+    verify_ssl: bool,
+    cancellation_check: Callable[[], None] | None = None,
+) -> Path:
+    """Download exactly one frozen GitLab job artifact using an atomic rename."""
 
-        apk_files = find_apk_files(extract_root)
-        if not apk_files:
-            raise GitLabInstallError(f"artifacts 中没有找到 APK：{zip_path}")
-        if len(apk_files) > 1:
-            apk_list = "\n".join(f"  - {apk.relative_to(extract_root)}" for apk in apk_files)
-            raise GitLabInstallError(
-                "artifacts 中找到多个 APK，当前无法自动选择。请调整 CI 产物或传 --install-job-id：\n"
-                f"{apk_list}"
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    expected_size = declared_size or min(max_artifact_bytes, 256 * 1024 * 1024)
+    if declared_size > max_artifact_bytes:
+        raise FrozenArtifactError("declared GitLab artifact exceeds the Worker limit")
+    _require_disk_space(output_dir, expected_size, min_free_bytes)
+    encoded_project = quote(project_path, safe="")
+    url = (
+        f"{gitlab_base_url.rstrip('/')}/api/v4/projects/"
+        f"{encoded_project}/jobs/{job_id}/artifacts"
+    )
+    final_path = output_dir / f"job-{job_id}-artifacts.zip"
+    part_path = final_path.with_suffix(final_path.suffix + ".part")
+    part_path.unlink(missing_ok=True)
+    response = None
+    try:
+        response = session.get(
+            url,
+            headers={"PRIVATE-TOKEN": token},
+            stream=True,
+            timeout=timeout_seconds,
+            verify=verify_ssl,
+            allow_redirects=False,
+        )
+        if response.status_code == 404:
+            raise FrozenArtifactError(
+                f"GitLab job {job_id} has no downloadable artifact",
+                candidate_recoverable=True,
             )
+        if response.status_code in {401, 403}:
+            raise FrozenArtifactError("GitLab artifact authentication was rejected")
+        if response.status_code >= 400:
+            raise FrozenArtifactError(
+                f"GitLab artifact request failed with HTTP {response.status_code}",
+                retryable=response.status_code in {408, 429}
+                or response.status_code >= 500,
+            )
+        content_length = response.headers.get("Content-Length")
+        if content_length:
+            try:
+                if int(content_length) > max_artifact_bytes:
+                    raise FrozenArtifactError(
+                        "GitLab artifact response exceeds the Worker limit"
+                    )
+            except ValueError as exc:
+                raise FrozenArtifactError(
+                    "GitLab artifact Content-Length is invalid"
+                ) from exc
+        written = 0
+        with part_path.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if cancellation_check:
+                    cancellation_check()
+                if not chunk:
+                    continue
+                written += len(chunk)
+                if written > max_artifact_bytes:
+                    raise FrozenArtifactError(
+                        "GitLab artifact response exceeds the Worker limit"
+                    )
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if declared_size and written != declared_size:
+            raise FrozenArtifactError(
+                "GitLab artifact size does not match the frozen Plan"
+            )
+        os.replace(part_path, final_path)
+        return final_path
+    except requests.exceptions.SSLError as exc:
+        raise FrozenArtifactError("GitLab artifact TLS verification failed") from exc
+    except requests.exceptions.Timeout as exc:
+        raise FrozenArtifactError(
+            "GitLab artifact download timed out", retryable=True
+        ) from exc
+    except requests.exceptions.RequestException as exc:
+        raise FrozenArtifactError(
+            "GitLab artifact transport failed", retryable=True
+        ) from exc
+    except OSError as exc:
+        raise FrozenArtifactError(
+            "GitLab artifact could not be stored locally"
+        ) from exc
+    finally:
+        part_path.unlink(missing_ok=True)
+        if response is not None:
+            response.close()
 
-        apk_name = sanitize_filename(filename) if filename else sanitize_filename(apk_files[0].name)
-        if not apk_name.lower().endswith(".apk"):
-            apk_name += ".apk"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / apk_name
-        shutil.move(str(apk_files[0]), output_path)
-        return output_path
+
+def extract_single_apk_secure(
+    zip_path: Path,
+    output_dir: Path,
+    *,
+    output_filename: str | None,
+    max_apk_bytes: int,
+    min_free_bytes: int,
+    max_entries: int = MAX_ZIP_ENTRIES,
+    max_uncompressed_bytes: int = MAX_ZIP_UNCOMPRESSED_BYTES,
+    max_entry_bytes: int = MAX_ZIP_ENTRY_BYTES,
+    max_compression_ratio: int = MAX_ZIP_COMPRESSION_RATIO,
+    cancellation_check: Callable[[], None] | None = None,
+) -> Path:
+    """Validate an entire ZIP and extract only its unique APK atomically."""
+
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            entries = archive.infolist()
+            if len(entries) > max_entries:
+                raise FrozenArtifactError(
+                    "GitLab artifact ZIP contains too many entries"
+                )
+            total_size = 0
+            apk_entries: list[zipfile.ZipInfo] = []
+            for entry in entries:
+                if cancellation_check:
+                    cancellation_check()
+                _validate_zip_entry(entry)
+                if entry.is_dir():
+                    continue
+                if entry.file_size > max_entry_bytes:
+                    raise FrozenArtifactError("GitLab artifact ZIP entry is too large")
+                total_size += entry.file_size
+                if total_size > max_uncompressed_bytes:
+                    raise FrozenArtifactError(
+                        "GitLab artifact ZIP expands beyond the Worker limit"
+                    )
+                ratio = entry.file_size / max(1, entry.compress_size)
+                if ratio > max_compression_ratio:
+                    raise FrozenArtifactError(
+                        "GitLab artifact ZIP compression ratio is unsafe"
+                    )
+                if (
+                    PurePosixPath(entry.filename.replace("\\", "/")).suffix.lower()
+                    == ".apk"
+                ):
+                    apk_entries.append(entry)
+            if not apk_entries:
+                raise FrozenArtifactError(
+                    "GitLab artifact ZIP contains no APK",
+                    candidate_recoverable=True,
+                )
+            if len(apk_entries) != 1:
+                raise FrozenArtifactError(
+                    "GitLab artifact ZIP contains multiple APK files",
+                    candidate_recoverable=True,
+                )
+            apk_entry = apk_entries[0]
+            if apk_entry.file_size > max_apk_bytes:
+                raise FrozenArtifactError("APK exceeds the Worker size limit")
+            _require_disk_space(output_dir, apk_entry.file_size, min_free_bytes)
+            output_name = sanitize_filename(
+                output_filename
+                or PurePosixPath(apk_entry.filename.replace("\\", "/")).name
+            )
+            if not output_name.lower().endswith(".apk"):
+                output_name += ".apk"
+            output_path = output_dir / output_name
+            part_path = output_path.with_suffix(output_path.suffix + ".part")
+            part_path.unlink(missing_ok=True)
+            written = 0
+            try:
+                with archive.open(apk_entry, "r") as source, part_path.open(
+                    "wb"
+                ) as target:
+                    while True:
+                        if cancellation_check:
+                            cancellation_check()
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if written > max_apk_bytes or written > apk_entry.file_size:
+                            raise FrozenArtifactError(
+                                "APK expands beyond its declared size"
+                            )
+                        target.write(chunk)
+                    target.flush()
+                    os.fsync(target.fileno())
+                if written != apk_entry.file_size:
+                    raise FrozenArtifactError("APK size does not match ZIP metadata")
+                os.replace(part_path, output_path)
+                return output_path
+            finally:
+                part_path.unlink(missing_ok=True)
+    except FrozenArtifactError:
+        raise
+    except (zipfile.BadZipFile, RuntimeError, OSError) as exc:
+        raise FrozenArtifactError("GitLab artifact is not a safe readable ZIP") from exc
+
+
+def _validate_zip_entry(entry: zipfile.ZipInfo) -> None:
+    normalized = entry.filename.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    mode = entry.external_attr >> 16
+    if (
+        not normalized
+        or "\x00" in normalized
+        or path.is_absolute()
+        or ".." in path.parts
+        or stat.S_ISLNK(mode)
+        or bool(entry.flag_bits & 0x1)
+    ):
+        raise FrozenArtifactError("GitLab artifact ZIP contains an unsafe entry")
+
+
+def _require_disk_space(path: Path, incoming_bytes: int, min_free_bytes: int) -> None:
+    try:
+        free = shutil.disk_usage(path).free
+    except OSError as exc:
+        raise FrozenArtifactError(
+            "Worker spool free space cannot be determined"
+        ) from exc
+    if free - incoming_bytes < min_free_bytes:
+        raise FrozenArtifactError("Worker spool has insufficient free space")
+
+
+def extract_single_apk(
+    zip_path: Path, output_dir: Path, filename: str | None = None
+) -> Path:
+    try:
+        return extract_single_apk_secure(
+            zip_path,
+            output_dir,
+            output_filename=filename,
+            max_apk_bytes=MAX_ZIP_ENTRY_BYTES,
+            min_free_bytes=1,
+        )
+    except FrozenArtifactError as exc:
+        raise GitLabInstallError(str(exc)) from exc
 
 
 def download_job_artifacts(config: GitLabInstallConfig, job_id: int) -> Path:
@@ -296,10 +549,14 @@ def download_job_artifacts(config: GitLabInstallConfig, job_id: int) -> Path:
         raise GitLabInstallError(f"GitLab artifacts 下载请求失败：{exc}") from exc
 
     if response.status_code == 404:
-        raise GitLabInstallError(f"job #{job_id} 没有可下载 artifacts，或当前账号无权限访问。")
+        raise GitLabInstallError(
+            f"job #{job_id} 没有可下载 artifacts，或当前账号无权限访问。"
+        )
     if response.status_code >= 400:
         detail = response.text.strip()
-        raise GitLabInstallError(f"GitLab artifacts 返回 HTTP {response.status_code}：{detail}")
+        raise GitLabInstallError(
+            f"GitLab artifacts 返回 HTTP {response.status_code}：{detail}"
+        )
 
     output_root = Path(config.output_dir)
     fallback = f"job_{job_id}_artifacts.zip"
@@ -343,7 +600,9 @@ def install_apk_with_adb(apk_path: Path, device_id: str | None = None) -> None:
     print("Installing APK:")
     print("  " + " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-    output = "\n".join(part.strip() for part in [result.stdout, result.stderr] if part.strip())
+    output = "\n".join(
+        part.strip() for part in [result.stdout, result.stderr] if part.strip()
+    )
     if output:
         print(output)
     if result.returncode != 0:
@@ -363,7 +622,9 @@ def build_download_install(config: GitLabInstallConfig) -> Path:
     print(f"  variant: {config.variant}")
 
     pipeline_id = trigger_pipeline(config)
-    pipeline_url = f"{config.gitlab.rstrip('/')}/android/WearfitPro/-/pipelines/{pipeline_id}"
+    pipeline_url = (
+        f"{config.gitlab.rstrip('/')}/android/WearfitPro/-/pipelines/{pipeline_id}"
+    )
     print(f"▶ #{pipeline_id} 运行中: {pipeline_url}", flush=True)
     wait_for_pipeline(config, pipeline_id)
 

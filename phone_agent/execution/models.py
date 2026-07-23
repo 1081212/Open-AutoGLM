@@ -1,13 +1,19 @@
-"""Pydantic models for the immutable ``autoglm.execution.v1`` plan."""
+"""Pydantic models for immutable platform execution plans."""
 
 from __future__ import annotations
 
 from enum import Enum
 import re
 from typing import Any, Literal
+from urllib.parse import urlparse
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+
+SUPPORTED_EXECUTION_VERSIONS = (
+    "autoglm.execution.v1",
+    "autoglm.execution.v2",
+)
 
 
 class StrictModel(BaseModel):
@@ -170,8 +176,49 @@ class AdhocItem(StrictModel):
     prompt: str = Field(min_length=1)
 
 
+class ArtifactCandidate(StrictModel):
+    job_id: int = Field(ge=1)
+    job_name: str = Field(min_length=1, max_length=255)
+    artifact_filename: str = Field(min_length=1, max_length=1024)
+    artifact_size: int = Field(ge=0)
+
+
+class PreTestInstall(StrictModel):
+    type: Literal["GITLAB_CI_ANDROID_APK"]
+    ci_build_id: UUID
+    repository_url: str = Field(min_length=1)
+    gitlab_project_path: str = Field(min_length=1, max_length=512)
+    ref: str = Field(min_length=1, max_length=255)
+    expected_commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    build_variant: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    pipeline_id: int = Field(ge=1)
+    pipeline_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    pipeline_web_url: str | None = None
+    artifact_candidates: tuple[ArtifactCandidate, ...] = Field(
+        min_length=1, max_length=100
+    )
+    download_strategy: Literal["FIRST_SINGLE_APK"]
+    install_strategy: Literal["ADB_REPLACE_DOWNGRADE"]
+
+    @model_validator(mode="after")
+    def validate_frozen_build(self) -> "PreTestInstall":
+        if self.pipeline_sha != self.expected_commit_sha:
+            raise ValueError("pipeline_sha must equal expected_commit_sha")
+        job_ids = [candidate.job_id for candidate in self.artifact_candidates]
+        if len(job_ids) != len(set(job_ids)):
+            raise ValueError("artifact candidate job_id values must be unique")
+        repository = urlparse(self.repository_url)
+        if repository.scheme != "https" or not repository.netloc:
+            raise ValueError("repository_url must be an absolute HTTPS URL")
+        if self.pipeline_web_url is not None:
+            pipeline_url = urlparse(self.pipeline_web_url)
+            if pipeline_url.scheme not in {"http", "https"} or not pipeline_url.netloc:
+                raise ValueError("pipeline_web_url must be an absolute HTTP(S) URL")
+        return self
+
+
 class ExecutionPlan(StrictModel):
-    schema_version: Literal["autoglm.execution.v1"]
+    schema_version: Literal["autoglm.execution.v1", "autoglm.execution.v2"]
     plan_id: UUID
     task_id: UUID
     project_id: UUID
@@ -181,18 +228,45 @@ class ExecutionPlan(StrictModel):
     target_requirements: TargetRequirements
     execution_options: ExecutionOptions
     model_profiles: ModelProfiles
+    pre_test_install: PreTestInstall | None = None
     test_run: TestRun | None
     adhoc: AdhocItem | None
 
+    @model_validator(mode="before")
+    @classmethod
+    def validate_version_shape(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            version = value.get("schema_version")
+            if version == "autoglm.execution.v1" and "pre_test_install" in value:
+                raise ValueError("autoglm.execution.v1 forbids pre_test_install")
+            if version == "autoglm.execution.v2" and "pre_test_install" not in value:
+                raise ValueError("autoglm.execution.v2 requires pre_test_install")
+        return value
+
     @model_validator(mode="after")
     def validate_union_and_ids(self) -> "ExecutionPlan":
+        if self.schema_version == "autoglm.execution.v2":
+            if self.pre_test_install is None:
+                raise ValueError("autoglm.execution.v2 requires pre_test_install")
+        elif self.pre_test_install is not None:
+            raise ValueError("autoglm.execution.v1 forbids pre_test_install")
+
         if self.task_type is TaskType.TEST_RUN:
-            if self.test_run is None or self.adhoc is not None or self.normalizer is None:
-                raise ValueError("TEST_RUN requires test_run/normalizer and forbids adhoc")
+            if (
+                self.test_run is None
+                or self.adhoc is not None
+                or self.normalizer is None
+            ):
+                raise ValueError(
+                    "TEST_RUN requires test_run/normalizer and forbids adhoc"
+                )
         elif self.adhoc is None or self.test_run is not None:
             raise ValueError("ADHOC requires adhoc and forbids test_run")
 
-        if self.execution_options.status_judge_enabled and not self.model_profiles.judge_profile:
+        if (
+            self.execution_options.status_judge_enabled
+            and not self.model_profiles.judge_profile
+        ):
             raise ValueError("status_judge_enabled requires judge_profile")
 
         if self.test_run:
@@ -202,7 +276,16 @@ class ExecutionPlan(StrictModel):
             execution_ids = [case.execution_case_id for case in self.test_run.cases]
             if len(execution_ids) != len(set(execution_ids)):
                 raise ValueError("execution_case_id must be unique")
-            step_ids = [step.step_id for case in self.test_run.cases for step in case.steps]
+            step_ids = [
+                step.step_id for case in self.test_run.cases for step in case.steps
+            ]
             if len(step_ids) != len(set(step_ids)):
                 raise ValueError("step_id must be globally unique within a plan")
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize_plan(self, handler):
+        data = handler(self)
+        if self.schema_version == "autoglm.execution.v1":
+            data.pop("pre_test_install", None)
+        return data

@@ -31,6 +31,13 @@ class OutboxItem:
     retry_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class TerminalTaskRun:
+    task_run_id: str
+    state: str
+    updated_at: str
+
+
 class DurableOutbox:
     def __init__(self, db_path: str | os.PathLike[str]) -> None:
         self.db_path = Path(db_path)
@@ -48,8 +55,7 @@ class DurableOutbox:
 
     def _migrate(self) -> None:
         with self._connection:
-            self._connection.executescript(
-                """
+            self._connection.executescript("""
                 CREATE TABLE IF NOT EXISTS outbox (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     idempotency_key TEXT NOT NULL UNIQUE,
@@ -88,8 +94,7 @@ class DurableOutbox:
                     producer_id TEXT PRIMARY KEY,
                     last_sequence INTEGER NOT NULL
                 );
-                """
-            )
+                """)
 
     def enqueue(
         self,
@@ -104,8 +109,12 @@ class DurableOutbox:
         producer_id: str | None = None,
         producer_seq: int | None = None,
         local_path: str | None = None,
+        defer_seconds: int = 0,
     ) -> int:
         now = _now()
+        next_retry_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=max(0, defer_seconds))
+        ).isoformat()
         serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         with self._lock, self._connection:
             self._connection.execute(
@@ -129,7 +138,7 @@ class DurableOutbox:
                     kind,
                     serialized,
                     local_path,
-                    now,
+                    next_retry_at,
                     now,
                 ),
             )
@@ -138,6 +147,51 @@ class DurableOutbox:
             ).fetchone()
             assert row is not None
             return int(row["id"])
+
+    def release_artifact_uploads(self, artifact_ids: list[str]) -> int:
+        """Make checkpoint-gated Artifact uploads immediately eligible."""
+        if not artifact_ids:
+            return 0
+        placeholders = ",".join("?" for _ in artifact_ids)
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                f"""
+                UPDATE outbox SET next_retry_at=?
+                WHERE kind='ARTIFACT_UPLOAD' AND state='PENDING'
+                  AND json_extract(payload_json, '$.artifact_id') IN ({placeholders})
+                """,
+                (_now(), *artifact_ids),
+            )
+            return cursor.rowcount
+
+    def suspend_terminal_run_artifact_uploads(self) -> int:
+        """Keep recovered terminal-run uploads durable without retrying them."""
+        with self._lock, self._connection:
+            cursor = self._connection.execute("""
+                UPDATE outbox
+                SET state='SUSPENDED',
+                    last_error='Upload suspended after terminal Run recovery'
+                WHERE kind='ARTIFACT_UPLOAD' AND state='PENDING'
+                  AND task_run_id IN (
+                      SELECT task_run_id FROM task_run_local_state
+                      WHERE state IN ('COMPLETED', 'ORPHANED')
+                  )
+                """)
+            return cursor.rowcount
+
+    def resume_suspended_artifact_uploads(self, task_run_id: str) -> int:
+        """Explicitly restore a terminal Run's suspended uploads if requested."""
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """
+                UPDATE outbox
+                SET state='PENDING', next_retry_at=?, last_error=NULL
+                WHERE kind='ARTIFACT_UPLOAD' AND state='SUSPENDED'
+                  AND task_run_id=?
+                """,
+                (_now(), task_run_id),
+            )
+            return cursor.rowcount
 
     def due(self, limit: int = 100) -> tuple[OutboxItem, ...]:
         with self._lock:
@@ -150,6 +204,14 @@ class DurableOutbox:
                 (_now(), limit),
             ).fetchall()
         return tuple(_to_item(row) for row in rows)
+
+    def find_by_idempotency_key(self, idempotency_key: str) -> OutboxItem | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM outbox WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+        return _to_item(row) if row is not None else None
 
     def acknowledge(self, item_id: int) -> None:
         with self._lock, self._connection:
@@ -338,13 +400,11 @@ class DurableOutbox:
 
     def active_task_runs(self) -> tuple[dict[str, Any], ...]:
         with self._lock:
-            rows = self._connection.execute(
-                """
+            rows = self._connection.execute("""
                 SELECT * FROM task_run_local_state
                 WHERE state IN ('ACTIVE', 'FINALIZING')
                 ORDER BY updated_at
-                """
-            ).fetchall()
+                """).fetchall()
         return tuple(
             {
                 "task_run_id": row["task_run_id"],
@@ -356,6 +416,113 @@ class DurableOutbox:
             }
             for row in rows
         )
+
+    def terminal_task_runs(self) -> tuple[TerminalTaskRun, ...]:
+        """Return GC-eligible Run identities, oldest terminal transition first."""
+        with self._lock:
+            rows = self._connection.execute("""
+                SELECT task_run_id, state, updated_at
+                FROM task_run_local_state
+                WHERE state IN ('COMPLETED', 'ORPHANED')
+                ORDER BY updated_at, task_run_id
+                """).fetchall()
+        return tuple(
+            TerminalTaskRun(
+                task_run_id=str(row["task_run_id"]),
+                state=str(row["state"]),
+                updated_at=str(row["updated_at"]),
+            )
+            for row in rows
+        )
+
+    def purge_terminal_task_run(self, task_run_id: str) -> bool:
+        """Delete one terminal Run's durable rows and scoped credentials.
+
+        The terminal-state predicate is repeated inside the transaction so a
+        caller can never purge an ACTIVE or FINALIZING Run using stale data.
+        """
+        with self._lock, self._connection:
+            state_row = self._connection.execute(
+                """
+                SELECT state, claim_json FROM task_run_local_state
+                WHERE task_run_id=?
+                """,
+                (task_run_id,),
+            ).fetchone()
+            if state_row is None or state_row["state"] not in {
+                "COMPLETED",
+                "ORPHANED",
+            }:
+                return False
+            outbox_rows = self._connection.execute(
+                """
+                SELECT lease_credential_ref, artifact_upload_credential_ref,
+                       producer_id, payload_json
+                FROM outbox WHERE task_run_id=?
+                """,
+                (task_run_id,),
+            ).fetchall()
+            credential_refs: set[str] = set()
+            producer_ids: set[str] = set()
+            claim = json.loads(str(state_row["claim_json"]))
+            _collect_credential_refs(claim, credential_refs)
+            for row in outbox_rows:
+                for column in (
+                    row["lease_credential_ref"],
+                    row["artifact_upload_credential_ref"],
+                ):
+                    if column:
+                        credential_refs.add(str(column))
+                if row["producer_id"]:
+                    producer_ids.add(str(row["producer_id"]))
+                _collect_credential_refs(
+                    json.loads(str(row["payload_json"])), credential_refs
+                )
+
+            self._connection.execute(
+                "DELETE FROM outbox WHERE task_run_id=?", (task_run_id,)
+            )
+            self._connection.execute(
+                "DELETE FROM task_run_local_state WHERE task_run_id=?", (task_run_id,)
+            )
+            for producer_id in producer_ids:
+                still_used = self._connection.execute(
+                    "SELECT 1 FROM outbox WHERE producer_id=? LIMIT 1",
+                    (producer_id,),
+                ).fetchone()
+                if still_used is None:
+                    self._connection.execute(
+                        "DELETE FROM producer_sequences WHERE producer_id=?",
+                        (producer_id,),
+                    )
+            for credential_ref in credential_refs:
+                # Credential refs are Run/Artifact-scoped. Still retain a ref
+                # if another durable item explicitly uses it.
+                referenced = self._connection.execute(
+                    """
+                    SELECT 1 FROM outbox
+                    WHERE lease_credential_ref=? OR artifact_upload_credential_ref=?
+                       OR payload_json LIKE ?
+                    LIMIT 1
+                    """,
+                    (
+                        credential_ref,
+                        credential_ref,
+                        f'%"{credential_ref}"%',
+                    ),
+                ).fetchone()
+                if referenced is None:
+                    self._connection.execute(
+                        "DELETE FROM credentials WHERE credential_ref=?",
+                        (credential_ref,),
+                    )
+            return True
+
+    def compact(self) -> None:
+        """Return deleted terminal rows to the filesystem after a GC batch."""
+        with self._lock:
+            self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self._connection.execute("VACUUM")
 
     def save_credential(
         self, credential_ref: str, secret: str, sealer: "LocalSealer"
@@ -439,3 +606,15 @@ def _to_item(row: sqlite3.Row) -> OutboxItem:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _collect_credential_refs(value: Any, result: set[str]) -> None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key.endswith("credential_ref") and isinstance(nested, str) and nested:
+                result.add(nested)
+            else:
+                _collect_credential_refs(nested, result)
+    elif isinstance(value, list):
+        for nested in value:
+            _collect_credential_refs(nested, result)
